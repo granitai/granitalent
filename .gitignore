@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Audio files (if saved temporarily)
+*.wav
+*.mp3
+*.ogg
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.db
+*.sqlite
+*.sqlite3

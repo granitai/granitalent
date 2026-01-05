@@ -1,0 +1,250 @@
+.applications-view {
+  padding: 0;
+}
+
+.view-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.view-header h2 {
+  font-size: 1.8rem;
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.refresh-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s;
+  font-size: 0.95rem;
+}
+
+.refresh-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.refresh-btn .icon {
+  font-size: 1.1rem;
+}
+
+.filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-bottom: 2rem;
+  padding: 1.5rem;
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.filter-group label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.filter-group input,
+.filter-group select {
+  padding: 0.75rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 1rem;
+}
+
+.filter-group input:focus,
+.filter-group select:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.applications-list {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.application-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  transition: all 0.2s;
+  box-shadow: var(--shadow-sm);
+}
+
+.application-card:hover {
+  border-color: var(--primary);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.card-header h3 {
+  font-size: 1.3rem;
+  color: var(--text-primary);
+}
+
+.status-badges {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.status-badge {
+  padding: 0.375rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: capitalize;
+  border: 1px solid;
+  display: inline-flex;
+  align-items: center;
+}
+
+.card-body {
+  margin-bottom: 1rem;
+}
+
+.card-body p {
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.ai-reasoning {
+  font-size: 0.9rem;
+  font-style: italic;
+  margin-top: 0.5rem;
+}
+
+.card-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.view-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  background: var(--gradient-primary);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+  font-size: 0.95rem;
+}
+
+.view-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.view-btn .icon {
+  font-size: 1.1rem;
+}
+
+.loading,
+.no-results {
+  text-align: center;
+  padding: 3rem;
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+}
+
+/* Row View Styles */
+.applications-list.row-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.applications-list.row-view .application-card {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 1rem 1.5rem;
+}
+
+.applications-list.row-view .card-header {
+  margin-bottom: 0;
+  min-width: 200px;
+  flex-shrink: 0;
+}
+
+.applications-list.row-view .card-header h3 {
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
+}
+
+.applications-list.row-view .card-body {
+  flex: 1;
+  margin-bottom: 0;
+  display: flex;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.applications-list.row-view .card-body p {
+  margin-bottom: 0;
+  font-size: 0.95rem;
+}
+
+.applications-list.row-view .card-actions {
+  flex-shrink: 0;
+}
+
+.applications-list.row-view .view-btn span {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .applications-list.row-view .application-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .applications-list.row-view .card-header {
+    width: 100%;
+  }
+  
+  .applications-list.row-view .card-body {
+    width: 100%;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+}
+
