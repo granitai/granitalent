@@ -4,7 +4,9 @@ import { HiMicrophone, HiBriefcase, HiClock, HiCheckCircle, HiXCircle, HiPlay, H
 import InterviewInterface from '../components/InterviewInterface'
 import './InterviewPortal.css'
 
-const API_BASE_URL = 'http://localhost:8000'
+// Utiliser une URL relative qui sera gérée par Nginx en production
+// et par le proxy Vite en développement
+const API_BASE_URL = '/api'
 
 function InterviewPortal() {
   const [email, setEmail] = useState('')
@@ -23,7 +25,7 @@ function InterviewPortal() {
     try {
       setLoading(true)
       setError('')
-      const response = await axios.get(`${API_BASE_URL}/api/candidates/interviews`, {
+      const response = await axios.get(`${API_BASE_URL}/candidates/interviews`, {
         params: { email: email.trim() }
       })
       setInterviews(response.data)
@@ -47,7 +49,7 @@ function InterviewPortal() {
     if (interview.status === 'completed') {
       // Load full details for completed interviews
       try {
-        const response = await axios.get(`${API_BASE_URL}/api/candidates/interviews/${interview.interview_id}`, {
+        const response = await axios.get(`${API_BASE_URL}/candidates/interviews/${interview.interview_id}`, {
           params: { email: email.trim() }
         })
         setSelectedInterview(response.data)

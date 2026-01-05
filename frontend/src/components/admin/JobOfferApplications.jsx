@@ -18,7 +18,7 @@ function JobOfferApplications({ jobOffer, onBack, onRefresh }) {
   const loadApplications = async () => {
     try {
       setLoading(true)
-      const response = await authApi.get(`/api/admin/job-offers/${jobOffer.offer_id}/applications`)
+      const response = await authApi.get(`/admin/job-offers/${jobOffer.offer_id}/applications`)
       setApplications(response.data)
     } catch (error) {
       console.error('Error loading applications:', error)
@@ -30,7 +30,7 @@ function JobOfferApplications({ jobOffer, onBack, onRefresh }) {
 
   const handleViewDetails = async (applicationId) => {
     try {
-      const response = await authApi.get(`/api/admin/applications/${applicationId}`)
+      const response = await authApi.get(`/admin/applications/${applicationId}`)
       setSelectedApplication(response.data)
       setShowDetailModal(true)
     } catch (error) {

@@ -1,24 +1,35 @@
 """OpenAI GPT LLM service via OpenRouter."""
 import re
+import os
 import logging
 from openai import OpenAI
 from typing import List, Dict, Optional
+from dotenv import load_dotenv
 from backend.config import LLM_PROVIDERS, DEFAULT_LLM_PROVIDER, INTERVIEWER_SYSTEM_PROMPT, build_interviewer_system_prompt
+
+# Load environment variables
+load_dotenv()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# TODO: Move this to environment variables later
-# Replace "sk-or-v1-..." with your actual OpenRouter API key
+# Load OpenRouter API key from environment variables
 # Get your API key from: https://openrouter.ai/keys
-OPENROUTER_API_KEY = "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"  # <-- PUT YOUR OPENROUTER API KEY HERE
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not OPENROUTER_API_KEY:
+    logger.warning("⚠️  WARNING: OPENROUTER_API_KEY not set in environment variables.")
+    logger.warning("   Set OPENROUTER_API_KEY in your .env file to use GPT models via OpenRouter.")
+    logger.warning("   Get your API key from: https://openrouter.ai/keys")
 
-# Initialize OpenRouter client
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-)
+# Initialize OpenRouter client (only if API key is available)
+if OPENROUTER_API_KEY:
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=OPENROUTER_API_KEY,
+    )
+else:
+    client = None
 
 # Get default model (OpenRouter format: "openai/gpt-4o-mini")
 DEFAULT_LLM_MODEL = LLM_PROVIDERS.get("gpt", {}).get("default_model", "openai/gpt-4o-mini")
@@ -168,6 +179,9 @@ The candidate is asking to switch to {target_language}. You MUST:
         messages[-1]["content"] = f"{user_message}\n\n[Note: The candidate seems to be trying to change the topic. As a professional interviewer, politely acknowledge this but redirect back to interview questions. Stay friendly and warm.]"
     
     # Generate response using OpenRouter API
+    if not client:
+        raise ValueError("OpenRouter API key not configured. Please set OPENROUTER_API_KEY in your .env file.")
+    
     try:
         response = client.chat.completions.create(
             model=model_id,
@@ -191,9 +205,9 @@ The candidate is asking to switch to {target_language}. You MUST:
     except Exception as e:
         error_msg = str(e)
         if "401" in error_msg or "invalid_api_key" in error_msg.lower():
-            logger.error(f"❌ Invalid OpenRouter API key. Please check your API key in gpt_llm.py")
+            logger.error(f"❌ Invalid OpenRouter API key. Please check your OPENROUTER_API_KEY in your .env file.")
             logger.error(f"   Get your API key from: https://openrouter.ai/keys")
-            raise ValueError("Invalid OpenRouter API key. Please check your API key in gpt_llm.py")
+            raise ValueError("Invalid OpenRouter API key. Please check your OPENROUTER_API_KEY in your .env file.")
         logger.error(f"Error generating GPT response: {e}")
         raise
 
@@ -226,6 +240,9 @@ def generate_audio_check_message(model_id: Optional[str] = None, language: Optio
             "content": f"{lang_instruction}\n\nBefore starting the interview, you want to make sure everything is working properly. Say a brief, friendly message to check if the candidate can hear you. Something like 'Hi, can you hear me?' or 'Hello, do you hear me okay?' but in the specified language. Keep it very brief (1 sentence), warm, and friendly. Respond only with what you would say, without any prefix."
         }
     ]
+    
+    if not client:
+        raise ValueError("OpenRouter API key not configured. Please set OPENROUTER_API_KEY in your .env file.")
     
     try:
         response = client.chat.completions.create(
@@ -272,6 +289,9 @@ def generate_name_request_message(model_id: Optional[str] = None, language: Opti
             "content": f"{lang_instruction}\n\nYou've confirmed the candidate can hear you. Now you want to get their name to make sure the audio and speech recognition are working correctly. Ask the candidate to tell you their name and how it's spelled. Be warm and friendly. Something like 'Great! Can you please tell me your name and how it's spelled?' or 'Perfect! Could you tell me your name and spell it for me?' but in the specified language. Keep it brief (1-2 sentences), warm, and friendly. Respond only with what you would say, without any prefix."
         }
     ]
+    
+    if not client:
+        raise ValueError("OpenRouter API key not configured. Please set OPENROUTER_API_KEY in your .env file.")
     
     try:
         response = client.chat.completions.create(
@@ -350,6 +370,9 @@ Respond only with what you would say, without any prefix like 'Interviewer:'."""
         }
     ]
     
+    if not client:
+        raise ValueError("OpenRouter API key not configured. Please set OPENROUTER_API_KEY in your .env file.")
+    
     try:
         response = client.chat.completions.create(
             model=model_id,
@@ -363,9 +386,9 @@ Respond only with what you would say, without any prefix like 'Interviewer:'."""
     except Exception as e:
         error_msg = str(e)
         if "401" in error_msg or "invalid_api_key" in error_msg.lower():
-            logger.error(f"❌ Invalid OpenRouter API key. Please check your API key in gpt_llm.py")
+            logger.error(f"❌ Invalid OpenRouter API key. Please check your OPENROUTER_API_KEY in your .env file.")
             logger.error(f"   Get your API key from: https://openrouter.ai/keys")
-            raise ValueError("Invalid OpenRouter API key. Please check your API key in gpt_llm.py")
+            raise ValueError("Invalid OpenRouter API key. Please check your OPENROUTER_API_KEY in your .env file.")
         logger.error(f"Error generating GPT greeting: {e}")
         raise
 
@@ -531,6 +554,9 @@ REMEMBER: Every claim you make must be supported by actual text from the transcr
         }
     ]
     
+    if not client:
+        raise ValueError("OpenRouter API key not configured. Please set OPENROUTER_API_KEY in your .env file.")
+    
     try:
         response = client.chat.completions.create(
             model=model_id,
@@ -543,8 +569,8 @@ REMEMBER: Every claim you make must be supported by actual text from the transcr
     except Exception as e:
         error_msg = str(e)
         if "401" in error_msg or "invalid_api_key" in error_msg.lower():
-            logger.error(f"❌ Invalid OpenRouter API key. Please check your API key in gpt_llm.py")
+            logger.error(f"❌ Invalid OpenRouter API key. Please check your OPENROUTER_API_KEY in your .env file.")
             logger.error(f"   Get your API key from: https://openrouter.ai/keys")
-            raise ValueError("Invalid OpenRouter API key. Please check your API key in gpt_llm.py")
+            raise ValueError("Invalid OpenRouter API key. Please check your OPENROUTER_API_KEY in your .env file.")
         logger.error(f"Error generating GPT assessment: {e}")
         raise

@@ -27,7 +27,7 @@ function InterviewsView({ viewMode = 'card' }) {
       if (filters.status) params.append('status', filters.status)
       if (filters.job_offer_id) params.append('job_offer_id', filters.job_offer_id)
 
-      const response = await authApi.get(`/api/admin/interviews?${params}`)
+      const response = await authApi.get(`/admin/interviews?${params}`)
       setInterviews(response.data)
     } catch (error) {
       console.error('Error loading interviews:', error)
@@ -39,7 +39,7 @@ function InterviewsView({ viewMode = 'card' }) {
 
   const loadJobOffers = async () => {
     try {
-      const response = await authApi.get(`/api/admin/job-offers`)
+      const response = await authApi.get(`/admin/job-offers`)
       setJobOffers(response.data)
     } catch (error) {
       console.error('Error loading job offers:', error)
@@ -48,7 +48,7 @@ function InterviewsView({ viewMode = 'card' }) {
 
   const handleViewDetails = async (interviewId) => {
     try {
-      const response = await authApi.get(`/api/admin/interviews/${interviewId}`)
+      const response = await authApi.get(`/admin/interviews/${interviewId}`)
       setSelectedInterview(response.data)
       setActiveTab('assessment') // Reset to assessment tab when opening new interview
     } catch (error) {

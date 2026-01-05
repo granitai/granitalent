@@ -4,7 +4,9 @@ import { useNavigate } from 'react-router-dom'
 import { HiBriefcase, HiCheckCircle, HiXCircle, HiClock, HiDocumentArrowUp, HiXMark, HiDocumentText } from 'react-icons/hi2'
 import './CandidatePortal.css'
 
-const API_BASE_URL = 'http://localhost:8000'
+// Utiliser une URL relative qui sera gérée par Nginx en production
+// et par le proxy Vite en développement
+const API_BASE_URL = '/api'
 
 function CandidatePortal() {
   const navigate = useNavigate()
@@ -31,7 +33,7 @@ function CandidatePortal() {
 
   const loadJobOffers = async () => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/api/job-offers`)
+      const response = await axios.get(`${API_BASE_URL}/job-offers`)
       setJobOffers(response.data)
     } catch (error) {
       console.error('Error loading job offers:', error)
@@ -119,7 +121,7 @@ function CandidatePortal() {
     formData.append('cv_file', applicationForm.cv_file)
 
     try {
-      const response = await axios.post(`${API_BASE_URL}/api/candidates/apply`, formData)
+      const response = await axios.post(`${API_BASE_URL}/candidates/apply`, formData)
       setSuccessMessage('Application submitted successfully!')
       setShowApplicationModal(false)
       setApplicationForm({

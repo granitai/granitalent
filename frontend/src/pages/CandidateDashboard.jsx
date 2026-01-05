@@ -5,7 +5,9 @@ import { useNavigate } from 'react-router-dom'
 import InterviewInterface from '../components/InterviewInterface'
 import './CandidateDashboard.css'
 
-const API_BASE_URL = 'http://localhost:8000'
+// Utiliser une URL relative qui sera gérée par Nginx en production
+// et par le proxy Vite en développement
+const API_BASE_URL = '/api'
 
 function CandidateDashboard() {
   const [email, setEmail] = useState('')
@@ -30,10 +32,10 @@ function CandidateDashboard() {
       
       // Load both applications and interviews
       const [applicationsRes, interviewsRes] = await Promise.all([
-        axios.get(`${API_BASE_URL}/api/candidates/applications`, {
+        axios.get(`${API_BASE_URL}/candidates/applications`, {
           params: { email: email.trim() }
         }),
-        axios.get(`${API_BASE_URL}/api/candidates/interviews`, {
+        axios.get(`${API_BASE_URL}/candidates/interviews`, {
           params: { email: email.trim() }
         })
       ])
@@ -62,7 +64,7 @@ function CandidateDashboard() {
     if (interview.status === 'completed') {
       // Load full details for completed interviews
       try {
-        const response = await axios.get(`${API_BASE_URL}/api/candidates/interviews/${interview.interview_id}`, {
+        const response = await axios.get(`${API_BASE_URL}/candidates/interviews/${interview.interview_id}`, {
           params: { email: email.trim() }
         })
         setSelectedInterview(response.data)

@@ -1,6 +1,8 @@
 import axios from 'axios'
 
-const API_BASE_URL = 'http://localhost:8000'
+// Utiliser une URL relative qui sera gérée par Nginx en production
+// et par le proxy Vite en développement
+const API_BASE_URL = '/api'
 
 // Create axios instance for public endpoints
 export const publicApi = axios.create({

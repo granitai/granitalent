@@ -20,7 +20,7 @@ function CandidatesView({ viewMode = 'card' }) {
       const params = new URLSearchParams()
       if (search) params.append('search', search)
 
-      const response = await authApi.get(`/api/admin/candidates?${params}`)
+      const response = await authApi.get(`/admin/candidates?${params}`)
       setCandidates(response.data)
     } catch (error) {
       console.error('Error loading candidates:', error)
@@ -32,7 +32,7 @@ function CandidatesView({ viewMode = 'card' }) {
 
   const handleViewCandidate = async (email) => {
     try {
-      const response = await authApi.get(`/api/admin/candidates/${email}`)
+      const response = await authApi.get(`/admin/candidates/${email}`)
       setSelectedCandidate(response.data)
     } catch (error) {
       console.error('Error loading candidate details:', error)

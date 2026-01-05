@@ -14,7 +14,7 @@ function ApplicationDetailModal({ application, onClose }) {
   const handleSelect = async () => {
     try {
       setLoading(true)
-      await authApi.post(`/api/admin/applications/${application.application_id}/select`)
+      await authApi.post(`/admin/applications/${application.application_id}/select`)
       alert('Candidate selected successfully')
       onClose()
     } catch (error) {
@@ -31,7 +31,7 @@ function ApplicationDetailModal({ application, onClose }) {
 
     try {
       setLoading(true)
-      await authApi.post(`/api/admin/applications/${application.application_id}/reject`, null, {
+      await authApi.post(`/admin/applications/${application.application_id}/reject`, null, {
         params: { reason }
       })
       alert('Candidate rejected')

@@ -3,8 +3,16 @@ import { HiMicrophone, HiStop, HiXMark, HiSpeakerWave } from 'react-icons/hi2'
 import axios from 'axios'
 import './InterviewInterface.css'
 
-const WS_URL = 'ws://localhost:8000/ws'
-const API_BASE_URL = 'http://localhost:8000'
+// URLs dynamiques basées sur l'emplacement actuel
+// Fonctionne en développement (localhost) et en production (IP du serveur)
+const getWebSocketURL = () => {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const host = window.location.host
+  return `${protocol}//${host}/ws`
+}
+
+const WS_URL = getWebSocketURL()
+const API_BASE_URL = '/api'
 
 // Voice Activity Detection settings
 const SILENCE_THRESHOLD = 35
@@ -80,7 +88,7 @@ function InterviewInterface({ interview, onClose }) {
   const loadProviders = async () => {
     try {
       updateStatus('Loading providers...', 'connecting')
-      const response = await axios.get(`${API_BASE_URL}/api/providers`)
+      const response = await axios.get(`${API_BASE_URL}/providers`)
       const config = response.data
       setProvidersConfig(config)
       

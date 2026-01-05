@@ -15,7 +15,7 @@ function InterviewInviteModal({ application, onClose, onSuccess }) {
     try {
       setLoading(true)
       await authApi.post(
-        `/api/admin/applications/${application.application_id}/send-interview`,
+        `/admin/applications/${application.application_id}/send-interview`,
         {
           interview_date: interviewDate || null,
           notes: notes

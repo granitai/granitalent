@@ -32,7 +32,7 @@ function ApplicationsView({ viewMode = 'card' }) {
       if (filters.hr_status) params.append('hr_status', filters.hr_status)
       if (filters.search) params.append('search', filters.search)
 
-      const response = await authApi.get(`/api/admin/applications?${params}`)
+      const response = await authApi.get(`/admin/applications?${params}`)
       setApplications(response.data)
     } catch (error) {
       console.error('Error loading applications:', error)
@@ -44,7 +44,7 @@ function ApplicationsView({ viewMode = 'card' }) {
 
   const loadJobOffers = async () => {
     try {
-      const response = await authApi.get(`/api/admin/job-offers`)
+      const response = await authApi.get(`/admin/job-offers`)
       setJobOffers(response.data)
     } catch (error) {
       console.error('Error loading job offers:', error)
@@ -57,7 +57,7 @@ function ApplicationsView({ viewMode = 'card' }) {
 
   const handleViewDetails = async (applicationId) => {
     try {
-      const response = await authApi.get(`/api/admin/applications/${applicationId}`)
+      const response = await authApi.get(`/admin/applications/${applicationId}`)
       setSelectedApplication(response.data)
       setShowDetailModal(true)
     } catch (error) {

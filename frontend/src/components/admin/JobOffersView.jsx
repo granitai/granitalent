@@ -28,7 +28,7 @@ function JobOffersView({ viewMode = 'card' }) {
   const loadJobOffers = async () => {
     try {
       setLoading(true)
-      const response = await authApi.get(`/api/admin/job-offers`)
+      const response = await authApi.get(`/admin/job-offers`)
       setJobOffers(response.data)
     } catch (error) {
       console.error('Error loading job offers:', error)
@@ -42,10 +42,10 @@ function JobOffersView({ viewMode = 'card' }) {
     e.preventDefault()
     try {
       if (editingOffer) {
-        await authApi.put(`/api/admin/job-offers/${editingOffer.offer_id}`, formData)
+        await authApi.put(`/admin/job-offers/${editingOffer.offer_id}`, formData)
         alert('Job offer updated successfully')
       } else {
-        await authApi.post(`/api/admin/job-offers`, formData)
+        await authApi.post(`/admin/job-offers`, formData)
         alert('Job offer created successfully')
       }
       setShowForm(false)
@@ -84,7 +84,7 @@ function JobOffersView({ viewMode = 'card' }) {
     if (!confirm('Are you sure you want to delete this job offer?')) return
 
     try {
-      await authApi.delete(`/api/admin/job-offers/${offerId}`)
+      await authApi.delete(`/admin/job-offers/${offerId}`)
       alert('Job offer deleted successfully')
       loadJobOffers()
     } catch (error) {

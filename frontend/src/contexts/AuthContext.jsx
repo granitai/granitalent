@@ -2,7 +2,9 @@ import React, { createContext, useContext, useState, useEffect, useMemo } from '
 import axios from 'axios'
 import { createAuthApi, setAuthApiInstance } from '../utils/api'
 
-const API_BASE_URL = 'http://localhost:8000'
+// Utiliser une URL relative qui sera gérée par Nginx en production
+// et par le proxy Vite en développement
+const API_BASE_URL = '/api'
 
 const AuthContext = createContext(null)
 
@@ -43,7 +45,7 @@ export const AuthProvider = ({ children }) => {
     }
 
     try {
-      const response = await axios.get(`${API_BASE_URL}/api/auth/me`, {
+      const response = await axios.get(`${API_BASE_URL}/auth/me`, {
         headers: {
           Authorization: `Bearer ${token}`
         }
@@ -60,7 +62,7 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (username, password) => {
     try {
-      const response = await axios.post(`${API_BASE_URL}/api/auth/login`, {
+      const response = await axios.post(`${API_BASE_URL}/auth/login`, {
         username,
         password
       })
@@ -68,7 +70,7 @@ export const AuthProvider = ({ children }) => {
       localStorage.setItem('admin_token', access_token)
       
       // Get admin info
-      const adminResponse = await axios.get(`${API_BASE_URL}/api/auth/me`, {
+      const adminResponse = await axios.get(`${API_BASE_URL}/auth/me`, {
         headers: {
           Authorization: `Bearer ${access_token}`
         }

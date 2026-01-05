@@ -14,7 +14,7 @@ function OverrideModal({ application, onClose, onSuccess }) {
     try {
       setLoading(true)
       await authApi.post(
-        `/api/admin/applications/${application.application_id}/override`,
+        `/admin/applications/${application.application_id}/override`,
         {
           hr_status: 'selected',
           reason: reason
