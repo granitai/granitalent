@@ -21,6 +21,12 @@
   box-shadow: var(--shadow-sm);
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
 .interview-header h2 {
   margin: 0;
   font-size: 1.5rem;
@@ -38,23 +44,36 @@
 }
 
 .interview-status.connected {
-  color: var(--success);
+  color: #10b981;
+  font-weight: 600;
+}
+
+.interview-status.connected::before {
+  content: '●';
+  display: inline-block;
+  margin-right: 0.5rem;
+  animation: pulse-dot 2s ease-in-out infinite;
+  color: #10b981;
 }
 
 .interview-status.listening {
-  color: var(--info);
+  color: #3b82f6;
+  font-weight: 600;
 }
 
 .interview-status.recording {
-  color: var(--error);
+  color: #ef4444;
+  font-weight: 600;
 }
 
 .interview-status.error {
-  color: var(--error);
+  color: #ef4444;
+  font-weight: 600;
 }
 
 .interview-status.connecting {
-  color: var(--warning);
+  color: #f59e0b;
+  font-weight: 600;
 }
 
 .close-btn {
@@ -80,6 +99,75 @@
 .close-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.countdown-timer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  transition: all 0.3s ease;
+}
+
+.countdown-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-size: 0.85rem;
+}
+
+.countdown-time {
+  font-family: 'Courier New', monospace;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  min-width: 50px;
+  text-align: center;
+}
+
+.countdown-timer.warning {
+  background: var(--warning-light, #fef3c7);
+  border-color: var(--warning, #f59e0b);
+  color: var(--warning, #f59e0b);
+}
+
+.countdown-timer.warning .countdown-label {
+  color: var(--warning, #f59e0b);
+}
+
+.countdown-timer.warning .countdown-time {
+  color: var(--warning, #f59e0b);
+}
+
+.countdown-timer.critical {
+  background: var(--error-light, #fee2e2);
+  border-color: var(--error);
+  color: var(--error);
+  animation: pulse-warning 1s ease-in-out infinite;
+}
+
+.countdown-timer.critical .countdown-label {
+  color: var(--error);
+}
+
+.countdown-timer.critical .countdown-time {
+  color: var(--error);
+}
+
+@keyframes pulse-warning {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.02);
+  }
 }
 
 .error-banner {
@@ -119,26 +207,54 @@
 
 .waiting-message {
   text-align: center;
-  padding: 3rem;
-  color: var(--text-secondary);
+  padding: 4rem 2rem;
+  color: #6c757d;
   font-size: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+}
+
+.waiting-message::before {
+  content: '💬';
+  font-size: 4rem;
+  margin-bottom: 1.5rem;
+  opacity: 0.5;
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.waiting-message p {
+  margin: 0;
+  font-weight: 500;
+  letter-spacing: 0.5px;
 }
 
 .message {
   display: flex;
   flex-direction: column;
-  margin-bottom: 1rem;
-  animation: fadeIn 0.3s ease-in;
+  margin-bottom: 1.5rem;
+  animation: slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-@keyframes fadeIn {
+@keyframes slideIn {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(20px) scale(0.95);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
 }
 
@@ -151,29 +267,43 @@
 }
 
 .message-header {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   font-weight: 600;
-  color: var(--text-muted);
-  margin-bottom: 0.5rem;
+  color: #6c757d;
+  margin-bottom: 0.75rem;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 1px;
+  padding: 0 0.5rem;
+  opacity: 0.8;
 }
 
 .message-content {
   max-width: 70%;
-  padding: 1rem 1.5rem;
-  border-radius: 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-sm);
-  line-height: 1.6;
+  padding: 1.25rem 1.75rem;
+  border-radius: 18px;
+  background: white;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  box-shadow: 
+    0 2px 8px rgba(0, 0, 0, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.04);
+  line-height: 1.7;
   color: var(--text-primary);
+  font-size: 1rem;
+  transition: all 0.3s ease;
+  word-wrap: break-word;
 }
 
 .message.user .message-content {
   background: var(--primary);
   color: white;
   border-color: var(--primary);
+  border-radius: 18px 18px 4px 18px;
+}
+
+.message.interviewer .message-content {
+  border-radius: 18px 18px 18px 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
 }
 
 .assessment-section {
@@ -204,20 +334,22 @@
 }
 
 .provider-selectors {
-  padding: 2rem;
+  padding: 1.5rem 2rem;
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1.5rem;
-  max-width: 1200px;
-  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-end;
+  justify-content: center;
 }
 
 .selector-group {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  min-width: 150px;
+  flex: 0 1 auto;
 }
 
 .selector-group label {
@@ -258,8 +390,7 @@
 }
 
 .start-interview-btn {
-  grid-column: 1 / -1;
-  padding: 1rem 2rem;
+  padding: 0.875rem 2rem;
   background: var(--gradient-primary);
   color: white;
   border: none;
@@ -268,7 +399,9 @@
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
-  margin-top: 0.5rem;
+  box-shadow: var(--shadow-sm);
+  letter-spacing: 0.3px;
+  white-space: nowrap;
 }
 
 .start-interview-btn:hover:not(:disabled) {

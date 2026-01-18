@@ -90,9 +90,8 @@ function ApplicationsView({ viewMode = 'card' }) {
     <div className="applications-view">
       <div className="view-header">
         <h2>Applications</h2>
-        <button onClick={loadApplications} className="refresh-btn">
+        <button onClick={loadApplications} className="refresh-btn" title="Refresh">
           <HiArrowPath className="icon" />
-          <span>Refresh</span>
         </button>
       </div>
 

@@ -11,9 +11,9 @@ services:
     env_file:
       - backend/.env
     volumes:
-      # Persister la base de données
-      - ./backend/database.db:/app/database.db
-      # Optionnel: pour les logs
+      # Persist the database
+      - ./backend/database.db:/app/backend/database.db
+      # Optional: for logs
       - ./logs:/app/logs
     restart: unless-stopped
     healthcheck:
@@ -32,4 +32,3 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
-

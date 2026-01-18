@@ -14,11 +14,15 @@ const getWebSocketURL = () => {
 const WS_URL = getWebSocketURL()
 const API_BASE_URL = '/api'
 
-// Voice Activity Detection settings
-const SILENCE_THRESHOLD = 35
-const SILENCE_DURATION = 1000
-const SPEECH_MIN_DURATION = 300
-const MAX_RECORDING_DURATION = 30000
+// Voice Activity Detection settings - Balanced for responsiveness and avoiding interruption
+const SILENCE_THRESHOLD = 30  // Volume below this = silence
+const MIN_SPEECH_VOLUME = 35  // Minimum volume to consider as actual speech (filters ambient noise)
+const SILENCE_DURATION = 2500  // 2.5 seconds of silence before stopping - balanced
+const SPEECH_MIN_DURATION = 600  // Minimum 600ms of speech to be valid
+const MAX_RECORDING_DURATION = 60000  // 60 seconds max per answer
+const RESPONSE_DEBOUNCE_MS = 2000  // Prevent processing duplicate responses within 2 seconds
+const FORCE_STOP_AFTER_MS = 45000  // Failsafe: force stop recording after 45 seconds even if VAD fails
+const LOW_ACTIVITY_TIMEOUT_MS = 8000  // If no strong speech detected for 8 seconds, stop
 
 function InterviewInterface({ interview, onClose }) {
   const [connected, setConnected] = useState(false)
@@ -31,6 +35,8 @@ function InterviewInterface({ interview, onClose }) {
   const [error, setError] = useState('')
   const [assessment, setAssessment] = useState(null)
   const [isEndingInterview, setIsEndingInterview] = useState(false)
+  const [timeRemaining, setTimeRemaining] = useState(null) // in seconds
+  const [timeLimitMinutes, setTimeLimitMinutes] = useState(null)
   
   // Provider/Model selection state
   const [providersConfig, setProvidersConfig] = useState(null)
@@ -55,9 +61,20 @@ function InterviewInterface({ interview, onClose }) {
   const recordingStartTimeRef = useRef(null)
   const streamingStartedRef = useRef(false)
   const isStreamingModeRef = useRef(false)
+  const countdownIntervalRef = useRef(null)
+  const isAudioPlayingRef = useRef(false)
+  const pendingListenRef = useRef(false)
   // Refs to track state values inside setInterval (avoid stale closure)
   const isListeningRef = useRef(false)
   const isRecordingRef = useRef(false)
+  const lastResponseTimeRef = useRef(0)  // Track last response time to prevent duplicates
+  const lastResponseTextRef = useRef('')  // Track last response text to prevent duplicates
+  const processingResponseRef = useRef(false)  // Prevent concurrent response processing
+  const sendingAudioRef = useRef(false)  // Prevent duplicate audio sends
+  const lastAudioSendTimeRef = useRef(0)  // Track last audio send time
+  const audioQueueRef = useRef([])  // Queue for audio playback to prevent overlaps
+  const isPlayingQueueRef = useRef(false)  // Whether we're currently playing from queue
+  const lastStrongSpeechRef = useRef(null)  // Track last strong speech for failsafe
 
   // Load providers on mount
   useEffect(() => {
@@ -213,7 +230,14 @@ function InterviewInterface({ interview, onClose }) {
       vadIntervalRef.current = null
     }
     
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current)
+      countdownIntervalRef.current = null
+    }
+    
     stopCurrentAudio()
+    isAudioPlayingRef.current = false
+    pendingListenRef.current = false
   }
 
   const initAudioContext = async () => {
@@ -279,10 +303,17 @@ function InterviewInterface({ interview, onClose }) {
         setError('Connection error. Please try again.')
       }
 
-      ws.onclose = () => {
-        console.log('WebSocket closed')
+      ws.onclose = (event) => {
+        console.log('WebSocket closed', event.code, event.reason)
         setConnected(false)
-        if (!isEndingInterview) {
+        
+        // Check if it's a normal close (interview completed) or an error
+        if (event.code === 1000) {
+          // Normal close - interview completed
+          console.log('✅ Interview ended normally:', event.reason)
+          updateStatus('Interview completed', 'connected')
+        } else if (!isEndingInterview && !assessment) {
+          // Unexpected close
           updateStatus('Disconnected', 'error')
           stopListening()
         }
@@ -294,27 +325,111 @@ function InterviewInterface({ interview, onClose }) {
     }
   }
 
+  const startCountdown = (minutes) => {
+    // Clear any existing countdown
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current)
+    }
+    
+    const totalSeconds = minutes * 60
+    setTimeRemaining(totalSeconds)
+    setTimeLimitMinutes(minutes)
+    
+    // Start countdown interval
+    countdownIntervalRef.current = setInterval(() => {
+      setTimeRemaining(prev => {
+        if (prev <= 1) {
+          clearInterval(countdownIntervalRef.current)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }
+
+  const formatTime = (seconds) => {
+    if (seconds === null || seconds === undefined) return ''
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
   const handleWebSocketMessage = async (data) => {
     switch (data.type) {
       case 'greeting':
         conversationIdRef.current = data.conversation_id
-        setCurrentPhase(data.phase || '')
+        // Update phase only if it actually changed to prevent unnecessary re-renders
+        const greetingPhase = data.phase || ''
+        if (greetingPhase !== currentPhase) {
+          setCurrentPhase(greetingPhase)
+        }
+        
+        // Start countdown timer if time limit is provided
+        if (data.time_limit_minutes) {
+          startCountdown(data.time_limit_minutes)
+        }
+        
         if (data.interviewer_text) {
           addMessage('interviewer', data.interviewer_text)
         }
         updateStatus('AI is speaking...', 'connected')
         try {
+          // Queue the pending listen request
+          pendingListenRef.current = true
           await playAudio(data.audio, data.audio_format)
           console.log('✅ Finished playing greeting')
+          // startListening will be called by processAudioQueue after audio is done
         } catch (e) {
           console.error('❌ Audio playback error:', e)
+          pendingListenRef.current = false
+          // Still try to start listening even if audio failed
+          startListening()
         }
-        // Auto-start listening after AI finishes speaking
-        startListening()
         break
       
       case 'response':
-        setCurrentPhase(data.phase || '')
+        // Prevent duplicate responses - check if this is the same response within debounce window
+        const now = Date.now()
+        const responseText = data.interviewer_text || ''
+        
+        // More robust duplicate detection:
+        // 1. Already processing another response
+        // 2. Same text within debounce window
+        // 3. Text starts with same first 50 chars (catches partial duplicates)
+        const textPrefix = responseText.substring(0, 50)
+        const lastTextPrefix = lastResponseTextRef.current.substring(0, 50)
+        const isDuplicate = (
+          processingResponseRef.current ||
+          (now - lastResponseTimeRef.current < RESPONSE_DEBOUNCE_MS && responseText === lastResponseTextRef.current) ||
+          (now - lastResponseTimeRef.current < RESPONSE_DEBOUNCE_MS && textPrefix === lastTextPrefix && textPrefix.length > 20)
+        )
+        
+        if (isDuplicate) {
+          console.log('⚠️ Ignoring duplicate response:', responseText.substring(0, 50))
+          return
+        }
+        
+        // Mark as processing and update tracking
+        processingResponseRef.current = true
+        lastResponseTimeRef.current = now
+        lastResponseTextRef.current = responseText
+        
+        // Stop listening immediately to prevent echo/overlap
+        if (isListeningRef.current) {
+          stopListening()
+        }
+        
+        // Stop any recording in progress
+        if (isRecordingRef.current) {
+          cancelRecording()
+        }
+        
+        // Update phase only if it actually changed to prevent unnecessary re-renders
+        const newPhase = data.phase || ''
+        if (newPhase !== currentPhase) {
+          setCurrentPhase(newPhase)
+        }
+        
         if (data.user_text) {
           addMessage('user', data.user_text)
         }
@@ -322,14 +437,22 @@ function InterviewInterface({ interview, onClose }) {
           addMessage('interviewer', data.interviewer_text)
         }
         updateStatus('AI is speaking...', 'connected')
+        
         try {
+          // Queue the pending listen request
+          pendingListenRef.current = true
           await playAudio(data.audio, data.audio_format)
           console.log('✅ Finished playing response')
+          // Reset processing flag after audio finishes
+          processingResponseRef.current = false
+          // startListening will be called by processAudioQueue after all audio is done
         } catch (e) {
           console.error('❌ Audio playback error:', e)
+          processingResponseRef.current = false
+          pendingListenRef.current = false
+          // Still try to start listening even if audio failed
+          startListening()
         }
-        // Auto-start listening after AI finishes speaking
-        startListening()
         break
       
       case 'assessment':
@@ -337,6 +460,12 @@ function InterviewInterface({ interview, onClose }) {
         setAssessment(data.assessment)
         updateStatus('Interview completed - Assessment generated', 'connected')
         setIsEndingInterview(false)
+        // Stop countdown timer
+        if (countdownIntervalRef.current) {
+          clearInterval(countdownIntervalRef.current)
+          countdownIntervalRef.current = null
+        }
+        setTimeRemaining(null)
         cleanupResources()
         break
       
@@ -369,10 +498,15 @@ function InterviewInterface({ interview, onClose }) {
     // Auto-scroll handled by CSS
   }
 
-  const playAudio = async (audioBase64, format = 'mp3') => {
+  // Internal function to play a single audio item
+  const playAudioInternal = async (audioBase64, format = 'mp3') => {
     return new Promise((resolve) => {
       try {
+        // Stop any currently playing audio first
         stopCurrentAudio()
+        
+        // Set flag that audio is playing
+        isAudioPlayingRef.current = true
         
         console.log('🔊 Playing audio, format:', format)
         
@@ -393,27 +527,92 @@ function InterviewInterface({ interview, onClose }) {
           console.log('🔊 Audio playback ended')
           URL.revokeObjectURL(audioUrl)
           currentAudioRef.current = null
-          resolve()
+          isAudioPlayingRef.current = false
+          
+          // Short delay to ensure audio is completely finished
+          setTimeout(() => {
+            resolve()
+          }, 300)
         }
         
         audio.onerror = (error) => {
           console.error('🔊 Audio playback error:', error)
           URL.revokeObjectURL(audioUrl)
           currentAudioRef.current = null
+          isAudioPlayingRef.current = false
           resolve()
         }
         
         audio.play()
-          .then(() => console.log('🔊 Audio playback started'))
+          .then(() => {
+            console.log('🔊 Audio playback started')
+            // Verify audio is actually playing
+            if (audio.paused) {
+              console.warn('⚠️ Audio started but is paused')
+              isAudioPlayingRef.current = false
+              resolve()
+            }
+          })
           .catch(e => {
             console.error('🔊 Audio play() failed:', e)
+            isAudioPlayingRef.current = false
             resolve()
           })
       } catch (error) {
         console.error('🔊 Audio setup error:', error)
+        isAudioPlayingRef.current = false
         resolve()
       }
     })
+  }
+
+  // Process the audio queue - ensures only one audio plays at a time
+  const processAudioQueue = async () => {
+    if (isPlayingQueueRef.current) {
+      console.log('⏸️ Audio queue already being processed')
+      return
+    }
+    
+    isPlayingQueueRef.current = true
+    
+    while (audioQueueRef.current.length > 0) {
+      const item = audioQueueRef.current.shift()
+      console.log(`🔊 Processing queued audio (${audioQueueRef.current.length} remaining in queue)`)
+      
+      // Stop listening while playing audio
+      if (isListeningRef.current) {
+        stopListening()
+      }
+      
+      await playAudioInternal(item.audio, item.format)
+    }
+    
+    isPlayingQueueRef.current = false
+    
+    // After all audio played, start listening if not already
+    if (pendingListenRef.current) {
+      pendingListenRef.current = false
+      setTimeout(() => {
+        startListening()
+      }, 500) // Extra delay after all audio finished
+    }
+  }
+
+  // Queue-based audio playback to prevent overlapping
+  const playAudio = async (audioBase64, format = 'mp3') => {
+    // Clear the queue if we're adding new audio - we only want the latest response
+    // This prevents multiple responses from stacking up
+    if (audioQueueRef.current.length > 0) {
+      console.log('🗑️ Clearing audio queue - new audio taking priority')
+      audioQueueRef.current = []
+    }
+    
+    // Add to queue
+    audioQueueRef.current.push({ audio: audioBase64, format })
+    console.log(`📥 Added audio to queue (queue size: ${audioQueueRef.current.length})`)
+    
+    // Process queue
+    await processAudioQueue()
   }
 
   const stopCurrentAudio = () => {
@@ -421,10 +620,25 @@ function InterviewInterface({ interview, onClose }) {
       currentAudioRef.current.pause()
       currentAudioRef.current.src = ''
       currentAudioRef.current = null
+      isAudioPlayingRef.current = false
     }
   }
 
   const startListening = () => {
+    // Don't start listening if audio is still playing
+    if (isAudioPlayingRef.current) {
+      console.log('⏸️ Audio still playing, queuing listen request')
+      pendingListenRef.current = true
+      return
+    }
+    
+    // Don't start if we're processing a response
+    if (processingResponseRef.current) {
+      console.log('⏸️ Response processing, queuing listen request')
+      pendingListenRef.current = true
+      return
+    }
+    
     if (isListeningRef.current || !analyserRef.current) return
     
     console.log('👂 Started listening for voice...')
@@ -435,13 +649,14 @@ function InterviewInterface({ interview, onClose }) {
     
     updateStatus('Listening... Speak when ready', 'listening')
     
-    // Start Voice Activity Detection
-    vadIntervalRef.current = setInterval(checkVoiceActivity, 100)
+    // Start Voice Activity Detection with slightly slower interval to reduce CPU usage
+    vadIntervalRef.current = setInterval(checkVoiceActivity, 150)
   }
 
   const stopListening = () => {
     setIsListening(false)
     isListeningRef.current = false
+    pendingListenRef.current = false
     if (vadIntervalRef.current) {
       clearInterval(vadIntervalRef.current)
       vadIntervalRef.current = null
@@ -452,6 +667,9 @@ function InterviewInterface({ interview, onClose }) {
     // Use refs instead of state to avoid stale closure in setInterval
     if (!analyserRef.current || !isListeningRef.current) return
     
+    // Don't check if audio is playing or processing response
+    if (isAudioPlayingRef.current || processingResponseRef.current) return
+    
     const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount)
     analyserRef.current.getByteFrequencyData(dataArray)
     
@@ -459,22 +677,54 @@ function InterviewInterface({ interview, onClose }) {
     const relevantData = dataArray.slice(2, 128)
     const average = relevantData.reduce((a, b) => a + b, 0) / relevantData.length
     
+    // Calculate peak for click detection
+    const peak = Math.max(...relevantData)
+    
     const now = Date.now()
     
-    // Check for maximum recording duration
-    if (isRecordingRef.current && recordingStartTimeRef.current && (now - recordingStartTimeRef.current > MAX_RECORDING_DURATION)) {
-      console.log('⏱️ Maximum recording duration reached, stopping...')
-      stopRecording()
-      return
+    // FAILSAFE 1: Maximum recording duration
+    if (isRecordingRef.current && recordingStartTimeRef.current) {
+      const recordingDuration = now - recordingStartTimeRef.current
+      
+      if (recordingDuration > MAX_RECORDING_DURATION) {
+        console.log('⏱️ Maximum recording duration reached, force stopping...')
+        stopRecording()
+        return
+      }
+      
+      // FAILSAFE 2: Force stop after FORCE_STOP_AFTER_MS regardless of VAD
+      if (recordingDuration > FORCE_STOP_AFTER_MS) {
+        console.log('⚠️ Failsafe: Force stopping after', FORCE_STOP_AFTER_MS, 'ms')
+        stopRecording()
+        return
+      }
+      
+      // FAILSAFE 3: If no strong speech for LOW_ACTIVITY_TIMEOUT_MS, stop
+      if (lastStrongSpeechRef.current && (now - lastStrongSpeechRef.current > LOW_ACTIVITY_TIMEOUT_MS)) {
+        console.log('⚠️ Failsafe: No strong speech detected for', LOW_ACTIVITY_TIMEOUT_MS, 'ms, stopping')
+        stopRecording()
+        return
+      }
     }
     
-    if (average > SILENCE_THRESHOLD) {
-      // Voice detected
+    // Simple speech detection: average volume above threshold
+    // Filter out clicks (very high peak with low average)
+    const isLikelyClick = peak > 200 && average < 20
+    const isLikelySpeech = average > MIN_SPEECH_VOLUME && !isLikelyClick
+    
+    // Track strong speech (for failsafe)
+    if (average > MIN_SPEECH_VOLUME * 1.5) {
+      lastStrongSpeechRef.current = now
+    }
+    
+    if (isLikelySpeech) {
+      // Voice detected - reset silence timer
       silenceStartRef.current = null
       
       if (!isRecordingRef.current) {
         // Start recording when speech is detected
         speechStartRef.current = now
+        lastStrongSpeechRef.current = now  // Initialize strong speech tracker
         startRecording()
       }
     } else {
@@ -482,18 +732,22 @@ function InterviewInterface({ interview, onClose }) {
       if (isRecordingRef.current) {
         if (!silenceStartRef.current) {
           silenceStartRef.current = now
-        } else if (now - silenceStartRef.current > SILENCE_DURATION) {
-          // Silence lasted long enough, stop recording
+        } else {
+          const silenceDuration = now - silenceStartRef.current
           const speechDuration = now - speechStartRef.current
-          if (speechDuration > SPEECH_MIN_DURATION) {
-            console.log(`🛑 Stopping recording after ${SILENCE_DURATION}ms of silence`)
-            stopRecording()
-          } else {
-            // Speech was too short, cancel and restart
-            console.log('⚠️ Speech too short, cancelling...')
-            cancelRecording()
-            silenceStartRef.current = null
-            speechStartRef.current = null
+          
+          // Stop if silence lasted long enough
+          if (silenceDuration > SILENCE_DURATION) {
+            if (speechDuration > SPEECH_MIN_DURATION) {
+              console.log(`🛑 Stopping recording after ${silenceDuration}ms of silence (speech was ${speechDuration}ms)`)
+              stopRecording()
+            } else {
+              // Speech was too short, cancel and restart
+              console.log('⚠️ Speech too short, cancelling...')
+              cancelRecording()
+              silenceStartRef.current = null
+              speechStartRef.current = null
+            }
           }
         }
       }
@@ -526,20 +780,30 @@ function InterviewInterface({ interview, onClose }) {
       }
       
       mediaRecorder.onstop = async () => {
-        console.log('⏹️ Recording stopped')
+        console.log('⏹️ Recording stopped, chunks:', audioChunksRef.current.length)
         recordingStartTimeRef.current = null
         
         if (isStreamingModeRef.current) {
           // In streaming mode, send commit to finalize transcription
           if (streamingStartedRef.current) {
+            console.log('📤 Sending stream commit...')
             sendStreamCommit()
+          } else {
+            console.warn('⚠️ Streaming not started, cannot send commit')
           }
           streamingStartedRef.current = false
         } else {
           // In batch mode, send full audio blob
           if (audioChunksRef.current.length > 0) {
             const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
-            await sendAudio(audioBlob)
+            console.log('📤 Preparing to send audio blob, size:', (audioBlob.size / 1024).toFixed(2), 'KB')
+            try {
+              await sendAudio(audioBlob)
+            } catch (error) {
+              console.error('❌ Error in sendAudio:', error)
+            }
+          } else {
+            console.warn('⚠️ No audio chunks to send')
           }
         }
       }
@@ -639,23 +903,90 @@ function InterviewInterface({ interview, onClose }) {
       return
     }
     
+    // Prevent duplicate audio sends within 500ms (reduced from 1000ms)
+    const now = Date.now()
+    if (sendingAudioRef.current) {
+      console.log('⚠️ Already sending audio, ignoring duplicate')
+      return
+    }
+    
+    // Only check time if we've sent audio very recently (within 300ms) - reduced to be less aggressive
+    if (now - lastAudioSendTimeRef.current < 300) {
+      console.log('⚠️ Audio sent too recently (', now - lastAudioSendTimeRef.current, 'ms ago), ignoring duplicate')
+      return
+    }
+    
+    console.log('📤 Starting audio send process...')
+    
+    sendingAudioRef.current = true
+    lastAudioSendTimeRef.current = now
+    
+    // Safety timeout to reset flag in case something goes wrong
+    const timeoutId = setTimeout(() => {
+      if (sendingAudioRef.current) {
+        console.warn('⚠️ Audio send timeout, resetting flag')
+        sendingAudioRef.current = false
+      }
+    }, 10000) // 10 second timeout
+    
     try {
       console.log('📤 Sending audio:', (audioBlob.size / 1024).toFixed(2), 'KB')
       const reader = new FileReader()
+      reader.onloadstart = () => {
+        console.log('📤 FileReader started reading...')
+      }
+      
       reader.onloadend = () => {
-        const base64Audio = reader.result.split(',')[1]
-        console.log('📤 Audio encoded, sending to server...')
-        wsRef.current.send(JSON.stringify({
-          type: 'audio',
-          conversation_id: conversationIdRef.current,
-          audio: base64Audio
-        }))
-        console.log('✅ Audio sent successfully')
+        clearTimeout(timeoutId)
+        try {
+          const result = reader.result
+          if (!result) {
+            console.error('❌ FileReader result is empty')
+            sendingAudioRef.current = false
+            return
+          }
+          const base64Audio = result.split(',')[1]
+          if (!base64Audio) {
+            console.error('❌ Failed to extract base64 audio from result')
+            sendingAudioRef.current = false
+            return
+          }
+          console.log('📤 Audio encoded (', (base64Audio.length / 1024).toFixed(2), 'KB), sending to server...')
+          
+          if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+            console.error('❌ WebSocket not open, cannot send')
+            sendingAudioRef.current = false
+            return
+          }
+          
+          wsRef.current.send(JSON.stringify({
+            type: 'audio',
+            conversation_id: conversationIdRef.current,
+            audio: base64Audio
+          }))
+          console.log('✅ Audio sent successfully to server')
+          sendingAudioRef.current = false
+        } catch (error) {
+          console.error('❌ Error in onloadend:', error)
+          sendingAudioRef.current = false
+        }
+      }
+      reader.onerror = (error) => {
+        clearTimeout(timeoutId)
+        console.error('❌ FileReader error:', error)
+        sendingAudioRef.current = false
+      }
+      reader.onabort = () => {
+        clearTimeout(timeoutId)
+        console.warn('⚠️ FileReader aborted')
+        sendingAudioRef.current = false
       }
       reader.readAsDataURL(audioBlob)
     } catch (error) {
+      clearTimeout(timeoutId)
       updateStatus(`Error sending audio: ${error.message}`, 'error')
       console.error('Error sending audio:', error)
+      sendingAudioRef.current = false
       startListening()
     }
   }
@@ -667,6 +998,13 @@ function InterviewInterface({ interview, onClose }) {
     if (isRecording) {
       cancelRecording()
     }
+    
+    // Stop countdown timer
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current)
+      countdownIntervalRef.current = null
+    }
+    setTimeRemaining(null)
     
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && conversationIdRef.current) {
       setIsEndingInterview(true)
@@ -701,9 +1039,17 @@ function InterviewInterface({ interview, onClose }) {
             {currentPhase && ` • ${currentPhase}`}
           </p>
         </div>
-        <button className="close-btn" onClick={onClose} disabled={isEndingInterview}>
-          <HiXMark />
-        </button>
+        <div className="header-right">
+          {timeRemaining !== null && (
+            <div className={`countdown-timer ${timeRemaining <= 300 ? 'warning' : ''} ${timeRemaining <= 60 ? 'critical' : ''}`}>
+              <span className="countdown-label">Time remaining:</span>
+              <span className="countdown-time">{formatTime(timeRemaining)}</span>
+            </div>
+          )}
+          <button className="close-btn" onClick={onClose} disabled={isEndingInterview}>
+            <HiXMark />
+          </button>
+        </div>
       </div>
 
       {error && (

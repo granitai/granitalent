@@ -57,6 +57,26 @@ def migrate_database():
             else:
                 logger.info("Column 'interview_start_language' already exists")
             
+            # Check if interview_duration_minutes column exists
+            result = conn.execute(text("""
+                SELECT COUNT(*) as count 
+                FROM pragma_table_info('job_offers') 
+                WHERE name='interview_duration_minutes'
+            """))
+            has_interview_duration = result.fetchone()[0] > 0
+            
+            # Add interview_duration_minutes column if it doesn't exist
+            if not has_interview_duration:
+                logger.info("Adding 'interview_duration_minutes' column to job_offers table...")
+                conn.execute(text("""
+                    ALTER TABLE job_offers 
+                    ADD COLUMN interview_duration_minutes INTEGER DEFAULT 20
+                """))
+                conn.commit()
+                logger.info("✅ Added 'interview_duration_minutes' column (default: 20 minutes)")
+            else:
+                logger.info("Column 'interview_duration_minutes' already exists")
+            
             # Check and add missing columns in applications table
             logger.info("Checking applications table for missing columns...")
             

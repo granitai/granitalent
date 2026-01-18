@@ -79,13 +79,18 @@ function CandidateDashboard() {
   }
 
   const getStatusBadge = (status, type = 'application') => {
-    const statusClass = status === 'approved' || status === 'selected' ? 'approved' 
+    const statusClass = status === 'selected' ? 'approved' 
       : status === 'rejected' ? 'rejected' 
       : status === 'completed' ? 'completed'
+      : status === 'interview_sent' ? 'approved'
       : 'pending'
     
     const statusText = type === 'application' 
-      ? (status === 'approved' ? 'AI Approved' : status === 'rejected' ? 'AI Rejected' : status === 'selected' ? 'Selected' : status === 'interview_sent' ? 'Interview Sent' : 'Pending')
+      ? (status === 'selected' ? 'Selected' 
+        : status === 'rejected' ? 'Not Selected' 
+        : status === 'interview_sent' ? 'Interview Invited' 
+        : status === 'under_review' ? 'Under Review'
+        : 'Pending')
       : (status === 'completed' ? 'Completed' : status === 'pending' ? 'Pending' : status)
     
     return (
@@ -97,8 +102,8 @@ function CandidateDashboard() {
 
   const getStatusIcon = (status) => {
     switch (status) {
-      case 'approved':
       case 'selected':
+      case 'interview_sent':
       case 'completed':
         return <HiCheckCircle className="status-icon approved" />
       case 'rejected':
@@ -166,21 +171,13 @@ function CandidateDashboard() {
                           <HiBriefcase className="job-icon" />
                           <h3>{app.job_offer.title}</h3>
                         </div>
-                        {getStatusIcon(app.ai_status)}
+                        {getStatusIcon(app.status || app.hr_status)}
                       </div>
                       
                       <div className="card-body">
                         <div className="status-row">
-                          <strong>AI Status:</strong> {getStatusBadge(app.ai_status)}
+                          <strong>Status:</strong> {getStatusBadge(app.status || app.hr_status)}
                         </div>
-                        <div className="status-row">
-                          <strong>HR Status:</strong> {getStatusBadge(app.hr_status)}
-                        </div>
-                        {app.ai_score !== null && (
-                          <div className="score-row">
-                            <strong>AI Score:</strong> {app.ai_score}/10
-                          </div>
-                        )}
                         {app.submitted_at && (
                           <p className="date-info">
                             <strong>Submitted:</strong> {new Date(app.submitted_at).toLocaleDateString()}
@@ -211,13 +208,6 @@ function CandidateDashboard() {
                           </div>
                         )}
                       </div>
-
-                      {app.ai_reasoning && (
-                        <div className="ai-reasoning">
-                          <strong>AI Feedback:</strong>
-                          <p>{app.ai_reasoning.substring(0, 150)}{app.ai_reasoning.length > 150 ? '...' : ''}</p>
-                        </div>
-                      )}
                     </div>
                   ))}
                 </div>

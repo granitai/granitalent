@@ -142,9 +142,8 @@ function InterviewsView({ viewMode = 'card' }) {
     <div className="interviews-view">
       <div className="view-header">
         <h2>Interviews</h2>
-        <button onClick={loadInterviews} className="refresh-btn">
+        <button onClick={loadInterviews} className="refresh-btn" title="Refresh">
           <HiArrowPath className="icon" />
-          <span>Refresh</span>
         </button>
       </div>
 

@@ -1,4 +1,4 @@
-"""OpenAI GPT LLM service via OpenRouter."""
+"""OpenAI GPT LLM service."""
 import re
 import os
 import logging
@@ -14,25 +14,33 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load OpenRouter API key from environment variables
-# Get your API key from: https://openrouter.ai/keys
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-if not OPENROUTER_API_KEY:
-    logger.warning("⚠️  WARNING: OPENROUTER_API_KEY not set in environment variables.")
-    logger.warning("   Set OPENROUTER_API_KEY in your .env file to use GPT models via OpenRouter.")
-    logger.warning("   Get your API key from: https://openrouter.ai/keys")
+# Load OpenAI API key from environment variables
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    logger.warning("⚠️  WARNING: OPENAI_API_KEY not set in environment variables.")
+    logger.warning("   Set OPENAI_API_KEY in your .env file to use GPT models.")
+    logger.warning("   Get your API key from: https://platform.openai.com/api-keys")
 
-# Initialize OpenRouter client (only if API key is available)
-if OPENROUTER_API_KEY:
+# Initialize OpenAI client (only if API key is available)
+if OPENAI_API_KEY:
     client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=OPENROUTER_API_KEY,
+        api_key=OPENAI_API_KEY,
     )
 else:
     client = None
 
-# Get default model (OpenRouter format: "openai/gpt-4o-mini")
-DEFAULT_LLM_MODEL = LLM_PROVIDERS.get("gpt", {}).get("default_model", "openai/gpt-4o-mini")
+# Get default model
+DEFAULT_LLM_MODEL = LLM_PROVIDERS.get("gpt", {}).get("default_model", "gpt-4o-mini")
+
+
+def normalize_model_name(model_id: str) -> str:
+    """
+    Normalize model name by removing 'openai/' prefix if present.
+    This allows backward compatibility with old model names.
+    """
+    if model_id.startswith("openai/"):
+        return model_id.replace("openai/", "", 1)
+    return model_id
 
 
 def clean_response(text: str) -> str:
@@ -84,22 +92,90 @@ def generate_response(
             job_offer_description=interview_context.get("job_offer_description"),
             candidate_cv_text=interview_context.get("candidate_cv_text"),
             required_languages=interview_context.get("required_languages"),
-            interview_start_language=interview_context.get("interview_start_language")
+            interview_start_language=interview_context.get("interview_start_language"),
+            confirmed_candidate_name=interview_context.get("confirmed_candidate_name"),
+            time_remaining_minutes=interview_context.get("time_remaining_minutes"),
+            total_interview_minutes=interview_context.get("total_interview_minutes"),
+            covered_topics=interview_context.get("covered_topics"),
+            tested_languages=interview_context.get("tested_languages"),
+            current_language=interview_context.get("current_language"),
+            required_languages_list=interview_context.get("required_languages_list"),
+            questions_in_current_language=interview_context.get("questions_in_current_language")
         )
         logger.info(f"🤖 LLM: Using context-aware prompt for position: {interview_context.get('job_title', 'Unknown')}")
+        if interview_context.get("time_remaining_minutes") is not None:
+            total = interview_context.get('total_interview_minutes', 20)
+            remaining = interview_context.get('time_remaining_minutes')
+            logger.info(f"⏱️ Time: {remaining:.1f}/{total:.0f} min remaining ({remaining/total*100:.0f}%)")
+        
+        # Log language context
+        req_langs = interview_context.get("required_languages_list", [])
+        if req_langs and len(req_langs) > 1:
+            current_lang = interview_context.get("current_language", "Unknown")
+            tested = interview_context.get("tested_languages", [])
+            q_count = interview_context.get("questions_in_current_language", 0)
+            untested = [l for l in req_langs if l not in tested]
+            logger.info(f"🌐 Language: {current_lang} ({q_count} questions), Untested: {untested}")
     else:
         system_prompt = INTERVIEWER_SYSTEM_PROMPT
     
-    # Build messages for OpenAI API
-    system_content = f"""{system_prompt}
+    # Add time awareness to system content
+    time_awareness = ""
+    if interview_context:
+        time_remaining = interview_context.get("time_remaining_minutes")
+        total_time = interview_context.get("total_interview_minutes")
+        
+        if time_remaining is not None:
+            if time_remaining <= 0:
+                time_awareness = f"\n\n⏱️ **TIME IS UP!** CONCLUDE NOW. Say: 'Our time is up. Thank you for your time! HR will review your application and contact you soon.'"
+            elif time_remaining <= 1:
+                time_awareness = f"\n\n⏱️ **{time_remaining:.0f} MIN LEFT - CONCLUDE NOW!**\nSay: 'We're out of time. Thank you! HR will review your application and contact you soon.'"
+            elif time_remaining <= 2:
+                time_awareness = f"\n\n⏱️ **{time_remaining:.1f} MIN LEFT - START CONCLUDING**\nSay: 'We're running short on time.' Ask if they have questions, then conclude with: 'Thank you! HR will contact you soon.'"
+            elif time_remaining <= 3:
+                time_awareness = f"\n\n⏱️ **{time_remaining:.1f} MIN LEFT**\nYou have time for 1-2 more questions. Don't rush to conclude yet."
+    
+    # Get current language from context
+    current_language = interview_context.get("current_language") if interview_context else None
+    interview_start_language = interview_context.get("interview_start_language") if interview_context else None
+    language_to_use = current_language or interview_start_language or "English"
+    
+    # Log language context for debugging
+    if interview_context:
+        untested = interview_context.get("untested_languages", [])
+        q_count = interview_context.get("questions_in_current_language", 0)
+        if untested:
+            logger.info(f"🌐 Language context: Speaking {language_to_use} ({q_count} questions). Still need to test: {untested}")
+    
+    # Build language validation instruction if there are untested languages
+    language_validation = ""
+    if interview_context:
+        untested = interview_context.get("untested_languages", [])
+        if untested:
+            language_validation = f"""
 
-CRITICAL RULES:
-- Respond only with what you would say. Do NOT include 'Interviewer:' prefix.
-- Stay in character as an interviewer. Do not break character or change your role.
-- **ABSOLUTELY CRITICAL**: If the candidate asks to switch languages in ANY way, IMMEDIATELY switch to that language and continue ALL subsequent questions in that language. Do NOT refuse, do NOT delay - switch IMMEDIATELY.
-- If the candidate tries to change topics away from the interview, politely but firmly redirect back.
-- Be direct, specific, and evaluative in your questions. Ask challenging questions that test capabilities.
-- Always be professional, direct, and thorough."""
+LANGUAGE TESTING - CRITICAL:
+- Languages still needing evaluation: {', '.join(untested)}
+- When switching to test a new language:
+  1. Be EXPLICIT: "Now let's evaluate your [Language]. Please answer IN [LANGUAGE]."
+  2. Ask your question IN that target language (not in English)
+  3. If they respond in the wrong language, say: "I notice you responded in [wrong language]. For this evaluation, I need your answer IN [target language]. Please try again."
+  4. Do NOT accept wrong-language responses as valid for that language test
+- NEVER give performance feedback. When concluding say: "Thank you! HR will review your application and contact you soon."
+"""
+    
+    # Build messages for OpenAI API
+    system_content = f"""{system_prompt}{time_awareness}{language_validation}
+
+Respond in {language_to_use} (or switch to another required language if you decide it's appropriate).
+
+RULES:
+- No 'Interviewer:' prefix. Stay in character.
+- ONE concise response only.
+- Be friendly and ask smart questions.
+- When switching languages, be EXPLICIT: "Please answer IN [Language]" and ask in that language.
+- If candidate responds in wrong language, ask them to respond again in the correct language.
+- NEVER give performance feedback or hints about how well they did."""
     
     messages = [
         {
@@ -145,27 +221,17 @@ CRITICAL RULES:
             "content": msg["content"]
         })
     
-    # Add explicit language switch instruction if detected
+    # Add explicit language switch instruction if detected (candidate request)
     if is_language_switch_request and target_language:
-        language_switch_instruction = f"""
-🚨 LANGUAGE SWITCH REQUEST DETECTED 🚨
-The candidate is asking to switch to {target_language}. You MUST:
-1. IMMEDIATELY acknowledge the request
-2. Switch to {target_language} RIGHT NOW
-3. Continue ALL subsequent questions in {target_language}
-4. Do NOT continue in the current language
-5. Example response: 'Bien sûr, continuons en français' (if switching to French) or 'Of course, let's continue in {target_language}'
-6. Then ask your next interview question in {target_language}
-"""
         messages.append({
             "role": "system",
-            "content": language_switch_instruction
+            "content": f"The candidate asked to switch to {target_language}. Please continue the interview in {target_language}."
         })
     
-    # Add user message with language switch emphasis if detected
+    # Add user message
     user_content = user_message
     if is_language_switch_request and target_language:
-        user_content = f"{user_message}\n\n[IMPORTANT: The candidate is requesting to switch to {target_language}. You MUST switch immediately and continue in that language.]"
+        user_content = f"{user_message}\n\n[Continue in {target_language}]"
     
     messages.append({
         "role": "user",
@@ -178,16 +244,23 @@ The candidate is asking to switch to {target_language}. You MUST:
         # Update the user message with redirect instruction (already added above)
         messages[-1]["content"] = f"{user_message}\n\n[Note: The candidate seems to be trying to change the topic. As a professional interviewer, politely acknowledge this but redirect back to interview questions. Stay friendly and warm.]"
     
-    # Generate response using OpenRouter API
+    # Normalize model name (remove 'openai/' prefix if present)
+    normalized_model = normalize_model_name(model_id)
+    
+    # Generate response using OpenAI API
     if not client:
-        raise ValueError("OpenRouter API key not configured. Please set OPENROUTER_API_KEY in your .env file.")
+        raise ValueError("OpenAI API key not configured. Please set OPENAI_API_KEY in your .env file.")
     
     try:
+        # Follow OpenAI best practices: use proper parameters to prevent multiple responses
         response = client.chat.completions.create(
-            model=model_id,
+            model=normalized_model,
             messages=messages,
             temperature=0.7,
-            max_tokens=500
+            max_tokens=300,  # Reduced to encourage concise responses
+            top_p=0.9,  # Nucleus sampling for better control
+            frequency_penalty=0.3,  # Reduce repetition
+            presence_penalty=0.3  # Encourage new topics
         )
         
         # Extract response text
@@ -205,9 +278,9 @@ The candidate is asking to switch to {target_language}. You MUST:
     except Exception as e:
         error_msg = str(e)
         if "401" in error_msg or "invalid_api_key" in error_msg.lower():
-            logger.error(f"❌ Invalid OpenRouter API key. Please check your OPENROUTER_API_KEY in your .env file.")
-            logger.error(f"   Get your API key from: https://openrouter.ai/keys")
-            raise ValueError("Invalid OpenRouter API key. Please check your OPENROUTER_API_KEY in your .env file.")
+            logger.error(f"❌ Invalid OpenAI API key. Please check your OPENAI_API_KEY in your .env file.")
+            logger.error(f"   Get your API key from: https://platform.openai.com/api-keys")
+            raise ValueError("Invalid OpenAI API key. Please check your OPENAI_API_KEY in your .env file.")
         logger.error(f"Error generating GPT response: {e}")
         raise
 
@@ -241,12 +314,15 @@ def generate_audio_check_message(model_id: Optional[str] = None, language: Optio
         }
     ]
     
+    # Normalize model name
+    normalized_model = normalize_model_name(model_id) if model_id else DEFAULT_LLM_MODEL
+    
     if not client:
-        raise ValueError("OpenRouter API key not configured. Please set OPENROUTER_API_KEY in your .env file.")
+        raise ValueError("OpenAI API key not configured. Please set OPENAI_API_KEY in your .env file.")
     
     try:
         response = client.chat.completions.create(
-            model=model_id,
+            model=normalized_model,
             messages=messages,
             temperature=0.7,
             max_tokens=50
@@ -255,8 +331,9 @@ def generate_audio_check_message(model_id: Optional[str] = None, language: Optio
     except Exception as e:
         error_msg = str(e)
         if "401" in error_msg or "invalid_api_key" in error_msg.lower():
-            logger.error(f"❌ Invalid OpenRouter API key. Please check your API key in gpt_llm.py")
-            raise ValueError("Invalid OpenRouter API key. Please check your API key in gpt_llm.py")
+            logger.error(f"❌ Invalid OpenAI API key. Please check your OPENAI_API_KEY in your .env file.")
+            logger.error(f"   Get your API key from: https://platform.openai.com/api-keys")
+            raise ValueError("Invalid OpenAI API key. Please check your OPENAI_API_KEY in your .env file.")
         logger.error(f"Error generating GPT audio check: {e}")
         raise
 
@@ -290,12 +367,15 @@ def generate_name_request_message(model_id: Optional[str] = None, language: Opti
         }
     ]
     
+    # Normalize model name
+    normalized_model = normalize_model_name(model_id) if model_id else DEFAULT_LLM_MODEL
+    
     if not client:
-        raise ValueError("OpenRouter API key not configured. Please set OPENROUTER_API_KEY in your .env file.")
+        raise ValueError("OpenAI API key not configured. Please set OPENAI_API_KEY in your .env file.")
     
     try:
         response = client.chat.completions.create(
-            model=model_id,
+            model=normalized_model,
             messages=messages,
             temperature=0.7,
             max_tokens=80
@@ -304,8 +384,9 @@ def generate_name_request_message(model_id: Optional[str] = None, language: Opti
     except Exception as e:
         error_msg = str(e)
         if "401" in error_msg or "invalid_api_key" in error_msg.lower():
-            logger.error(f"❌ Invalid OpenRouter API key. Please check your API key in gpt_llm.py")
-            raise ValueError("Invalid OpenRouter API key. Please check your API key in gpt_llm.py")
+            logger.error(f"❌ Invalid OpenAI API key. Please check your OPENAI_API_KEY in your .env file.")
+            logger.error(f"   Get your API key from: https://platform.openai.com/api-keys")
+            raise ValueError("Invalid OpenAI API key. Please check your OPENAI_API_KEY in your .env file.")
         logger.error(f"Error generating GPT name request: {e}")
         raise
 
@@ -338,7 +419,15 @@ def generate_opening_greeting(
             job_offer_description=interview_context.get("job_offer_description"),
             candidate_cv_text=interview_context.get("candidate_cv_text"),
             required_languages=interview_context.get("required_languages"),
-            interview_start_language=interview_context.get("interview_start_language")
+            interview_start_language=interview_context.get("interview_start_language"),
+            confirmed_candidate_name=interview_context.get("confirmed_candidate_name"),
+            time_remaining_minutes=interview_context.get("time_remaining_minutes"),
+            total_interview_minutes=interview_context.get("total_interview_minutes"),
+            covered_topics=interview_context.get("covered_topics"),
+            tested_languages=interview_context.get("tested_languages"),
+            current_language=interview_context.get("current_language"),
+            required_languages_list=interview_context.get("required_languages_list"),
+            questions_in_current_language=interview_context.get("questions_in_current_language")
         )
         job_title = interview_context.get("job_title", "this position")
         logger.info(f"🤖 LLM: Generating context-aware greeting for position: {job_title}")
@@ -346,14 +435,20 @@ def generate_opening_greeting(
         # Include candidate name if available
         name_mention = f"Hi {candidate_name}," if candidate_name else "Hi,"
         
-        greeting_instruction = f"""Start the actual interview by:
+        # Get interview start language for greeting
+        interview_start_language = interview_context.get("interview_start_language")
+        lang_instruction = f"Respond in {interview_start_language}." if interview_start_language else "Respond in English."
+        
+        greeting_instruction = f"""{lang_instruction}
+
+Start the actual interview by:
 1. Greeting the candidate warmly using their name ({name_mention if candidate_name else "Hi,"})
 2. Mentioning the position they're interviewing for ({job_title})
 3. Briefly acknowledging you've reviewed their CV
 4. Asking them to introduce themselves and tell you what interests them about this role
 
 Keep it brief, friendly, and professional. Maximum 3-4 sentences.
-Respond only with what you would say, without any prefix like 'Interviewer:'."""
+Respond in {interview_start_language if interview_start_language else 'English'}. No prefix like 'Interviewer:'."""
     else:
         name_mention = f"Hi {candidate_name}," if candidate_name else "Hi,"
         system_prompt = INTERVIEWER_SYSTEM_PROMPT
@@ -370,12 +465,15 @@ Respond only with what you would say, without any prefix like 'Interviewer:'."""
         }
     ]
     
+    # Normalize model name
+    normalized_model = normalize_model_name(model_id) if model_id else DEFAULT_LLM_MODEL
+    
     if not client:
-        raise ValueError("OpenRouter API key not configured. Please set OPENROUTER_API_KEY in your .env file.")
+        raise ValueError("OpenAI API key not configured. Please set OPENAI_API_KEY in your .env file.")
     
     try:
         response = client.chat.completions.create(
-            model=model_id,
+            model=normalized_model,
             messages=messages,
             temperature=0.7,
             max_tokens=200
@@ -386,9 +484,9 @@ Respond only with what you would say, without any prefix like 'Interviewer:'."""
     except Exception as e:
         error_msg = str(e)
         if "401" in error_msg or "invalid_api_key" in error_msg.lower():
-            logger.error(f"❌ Invalid OpenRouter API key. Please check your OPENROUTER_API_KEY in your .env file.")
-            logger.error(f"   Get your API key from: https://openrouter.ai/keys")
-            raise ValueError("Invalid OpenRouter API key. Please check your OPENROUTER_API_KEY in your .env file.")
+            logger.error(f"❌ Invalid OpenAI API key. Please check your OPENAI_API_KEY in your .env file.")
+            logger.error(f"   Get your API key from: https://platform.openai.com/api-keys")
+            raise ValueError("Invalid OpenAI API key. Please check your OPENAI_API_KEY in your .env file.")
         logger.error(f"Error generating GPT greeting: {e}")
         raise
 
@@ -491,23 +589,49 @@ A proper evaluation cannot be provided as there was insufficient interview conte
 """
         logger.info(f"🤖 LLM: Generating context-aware assessment for position: {job_title}")
     
-    # Check if language evaluation is needed
+    # Check if language evaluation is needed - ONLY for languages actually tested
     language_section = ""
     required_languages = interview_context.get("required_languages") if interview_context else None
+    tested_languages = interview_context.get("tested_languages", []) if interview_context else []
+    
     if required_languages:
         try:
             import json
-            languages = json.loads(required_languages) if required_languages else []
-            if languages:
+            all_languages = json.loads(required_languages) if required_languages else []
+            
+            # Only evaluate languages that were actually tested
+            if tested_languages and len(tested_languages) > 0:
+                tested_list = list(tested_languages) if isinstance(tested_languages, set) else tested_languages
+                untested = [lang for lang in all_languages if lang not in tested_list]
+                
+                logger.info(f"🌐 Assessment: Tested languages: {tested_list}, Untested: {untested}")
+                
                 language_section = f"""
-10. **Linguistic Capacity** - Evaluate the candidate's proficiency in each required language: {', '.join(languages)}.
-    For each language, provide a score (0-10) and brief assessment covering:
+10. **Linguistic Capacity** - CRITICAL: ONLY evaluate languages that were ACTUALLY TESTED in the transcript.
+    
+    Languages that WERE tested during this interview: {', '.join(tested_list)}
+    Languages that were NOT tested (DO NOT SCORE THESE): {', '.join(untested) if untested else 'None'}
+    
+    **IMPORTANT**: 
+    - ONLY provide scores for languages listed as "WERE tested" above
+    - For untested languages, write "NOT TESTED - No score can be provided as this language was not evaluated during the interview"
+    - Do NOT invent or fabricate scores for languages that were not tested
+    
+    For each TESTED language only, provide a score (0-10) and brief assessment covering:
     - Fluency and naturalness
     - Vocabulary range and accuracy
     - Grammar and syntax
     - Ability to discuss technical topics
 """
-        except:
+            else:
+                # No languages were explicitly tested
+                language_section = f"""
+10. **Linguistic Capacity** - Note: Required languages are {', '.join(all_languages)}, but language testing may not have occurred.
+    Only score languages if there is clear evidence in the transcript of the candidate speaking in that language.
+    If a language was not tested, write "NOT TESTED - cannot evaluate".
+"""
+        except Exception as e:
+            logger.warning(f"⚠️ Error parsing language requirements: {e}")
             pass
     
     assessment_prompt = f"""You are an expert interview assessor. Based on the following interview information, provide a comprehensive assessment.
@@ -554,12 +678,15 @@ REMEMBER: Every claim you make must be supported by actual text from the transcr
         }
     ]
     
+    # Normalize model name
+    normalized_model = normalize_model_name(model_id) if model_id else DEFAULT_LLM_MODEL
+    
     if not client:
-        raise ValueError("OpenRouter API key not configured. Please set OPENROUTER_API_KEY in your .env file.")
+        raise ValueError("OpenAI API key not configured. Please set OPENAI_API_KEY in your .env file.")
     
     try:
         response = client.chat.completions.create(
-            model=model_id,
+            model=normalized_model,
             messages=messages,
             temperature=0.7,
             max_tokens=2000
@@ -569,8 +696,8 @@ REMEMBER: Every claim you make must be supported by actual text from the transcr
     except Exception as e:
         error_msg = str(e)
         if "401" in error_msg or "invalid_api_key" in error_msg.lower():
-            logger.error(f"❌ Invalid OpenRouter API key. Please check your OPENROUTER_API_KEY in your .env file.")
-            logger.error(f"   Get your API key from: https://openrouter.ai/keys")
-            raise ValueError("Invalid OpenRouter API key. Please check your OPENROUTER_API_KEY in your .env file.")
+            logger.error(f"❌ Invalid OpenAI API key. Please check your OPENAI_API_KEY in your .env file.")
+            logger.error(f"   Get your API key from: https://platform.openai.com/api-keys")
+            raise ValueError("Invalid OpenAI API key. Please check your OPENAI_API_KEY in your .env file.")
         logger.error(f"Error generating GPT assessment: {e}")
         raise

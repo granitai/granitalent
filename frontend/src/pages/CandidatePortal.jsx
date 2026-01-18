@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 import { useNavigate } from 'react-router-dom'
-import { HiBriefcase, HiCheckCircle, HiXCircle, HiClock, HiDocumentArrowUp, HiXMark, HiDocumentText } from 'react-icons/hi2'
+import { HiBriefcase, HiCheckCircle, HiXCircle, HiClock, HiDocumentArrowUp, HiXMark, HiDocumentText, HiEye } from 'react-icons/hi2'
 import './CandidatePortal.css'
 
 // Utiliser une URL relative qui sera gérée par Nginx en production
@@ -13,6 +13,7 @@ function CandidatePortal() {
   const [jobOffers, setJobOffers] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedOffer, setSelectedOffer] = useState(null)
+  const [showDetailsModal, setShowDetailsModal] = useState(false)
   const [showApplicationModal, setShowApplicationModal] = useState(false)
   const [applicationForm, setApplicationForm] = useState({
     full_name: '',
@@ -42,8 +43,14 @@ function CandidatePortal() {
     }
   }
 
+  const handleViewDetails = (offer) => {
+    setSelectedOffer(offer)
+    setShowDetailsModal(true)
+  }
+
   const handleApply = (offer) => {
     setSelectedOffer(offer)
+    setShowDetailsModal(false)
     setShowApplicationModal(true)
   }
 
@@ -176,28 +183,149 @@ function CandidatePortal() {
         ) : (
           jobOffers.map(offer => (
             <div key={offer.offer_id} className="job-offer-card">
-              <h3>{offer.title}</h3>
-              <p className="description">
-                {offer.description.substring(0, 200)}
-                {offer.description.length > 200 ? '...' : ''}
-              </p>
-              {offer.required_skills && (
-                <p className="skills"><strong>Skills:</strong> {offer.required_skills}</p>
-              )}
-              {offer.experience_level && (
-                <p className="experience"><strong>Experience:</strong> {offer.experience_level}</p>
-              )}
-              <button 
-                className="apply-btn"
-                onClick={() => handleApply(offer)}
-              >
-                <HiDocumentArrowUp className="icon" />
-                <span>Apply Now</span>
-              </button>
+              <div className="job-offer-card-header">
+                <h3>{offer.title}</h3>
+              </div>
+              <div className="job-offer-card-body">
+                <p className="description">
+                  {offer.description.substring(0, 150)}
+                  {offer.description.length > 150 ? '...' : ''}
+                </p>
+                <div className="job-offer-card-meta">
+                  {offer.required_skills && (
+                    <div className="skills">
+                      <strong>Skills</strong>
+                      {offer.required_skills.includes(',') || offer.required_skills.includes(';') ? (
+                        <div className="skills-tags">
+                          {offer.required_skills.split(/[,;]/).filter(s => s.trim()).slice(0, 4).map((skill, idx) => (
+                            <span key={idx} className="skill-tag">
+                              {skill.trim()}
+                            </span>
+                          ))}
+                          {offer.required_skills.split(/[,;]/).filter(s => s.trim()).length > 4 && (
+                            <span className="skill-tag">
+                              +{offer.required_skills.split(/[,;]/).filter(s => s.trim()).length - 4} more
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="skills-text">{offer.required_skills}</p>
+                      )}
+                    </div>
+                  )}
+                  {offer.experience_level && (
+                    <div className="experience">
+                      <strong>Experience</strong>
+                      <span className="experience-badge">
+                        {offer.experience_level}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="job-offer-card-footer">
+                <div className="card-actions">
+                  <button 
+                    className="view-details-btn"
+                    onClick={() => handleViewDetails(offer)}
+                  >
+                    <HiEye className="icon" />
+                    <span>View Details</span>
+                  </button>
+                  <button 
+                    className="apply-btn"
+                    onClick={() => handleApply(offer)}
+                  >
+                    <HiDocumentArrowUp className="icon" />
+                    <span>Apply Now</span>
+                  </button>
+                </div>
+              </div>
             </div>
           ))
         )}
       </div>
+
+      {showDetailsModal && selectedOffer && (
+        <div className="modal-overlay" onClick={() => setShowDetailsModal(false)}>
+          <div className="modal-content details-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>{selectedOffer.title}</h2>
+              <button 
+                className="close-btn"
+                onClick={() => setShowDetailsModal(false)}
+                aria-label="Close"
+              >
+                <HiXMark />
+              </button>
+            </div>
+            
+            <div className="offer-details">
+              <div className="detail-section">
+                <h3>Job Description</h3>
+                <p className="detail-content">{selectedOffer.description}</p>
+              </div>
+
+              {selectedOffer.required_skills && (
+                <div className="detail-section">
+                  <h3>Required Skills</h3>
+                  <p className="detail-content">{selectedOffer.required_skills}</p>
+                </div>
+              )}
+
+              {selectedOffer.experience_level && (
+                <div className="detail-section">
+                  <h3>Experience Level</h3>
+                  <p className="detail-content">{selectedOffer.experience_level}</p>
+                </div>
+              )}
+
+              {selectedOffer.education_requirements && (
+                <div className="detail-section">
+                  <h3>Education Requirements</h3>
+                  <p className="detail-content">{selectedOffer.education_requirements}</p>
+                </div>
+              )}
+
+              {selectedOffer.required_languages && (
+                <div className="detail-section">
+                  <h3>Required Languages</h3>
+                  <p className="detail-content">{selectedOffer.required_languages}</p>
+                </div>
+              )}
+
+              {selectedOffer.created_at && (
+                <div className="detail-section">
+                  <h3>Posted Date</h3>
+                  <p className="detail-content">
+                    {new Date(selectedOffer.created_at).toLocaleDateString('en-US', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric'
+                    })}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-actions">
+              <button 
+                className="apply-btn"
+                onClick={() => handleApply(selectedOffer)}
+              >
+                <HiDocumentArrowUp className="icon" />
+                <span>Apply Now</span>
+              </button>
+              <button 
+                className="cancel-btn"
+                onClick={() => setShowDetailsModal(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showApplicationModal && (
         <div className="modal-overlay" onClick={() => setShowApplicationModal(false)}>

@@ -111,20 +111,24 @@ def _evaluate_with_gpt(prompt: str, model_id: str) -> str:
     """Evaluate using GPT LLM."""
     from openai import OpenAI
     
-    # Get OpenRouter API key from gpt_llm module
+    # Get OpenAI API key from gpt_llm module
     import backend.services.gpt_llm as gpt_module
-    openrouter_key = getattr(gpt_module, 'OPENROUTER_API_KEY', None)
+    openai_key = getattr(gpt_module, 'OPENAI_API_KEY', None)
     
-    if not openrouter_key:
-        raise ValueError("OpenRouter API key not found. Please configure it in gpt_llm.py")
+    if not openai_key:
+        raise ValueError("OpenAI API key not found. Please configure OPENAI_API_KEY in your .env file")
+    
+    # Normalize model name (remove 'openai/' prefix if present)
+    normalized_model = model_id
+    if model_id.startswith("openai/"):
+        normalized_model = model_id.replace("openai/", "", 1)
     
     client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=openrouter_key,
+        api_key=openai_key,
     )
     
     response = client.chat.completions.create(
-        model=model_id,
+        model=normalized_model,
         messages=[
             {
                 "role": "system",

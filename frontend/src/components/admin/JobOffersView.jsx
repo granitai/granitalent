@@ -1,8 +1,102 @@
-import React, { useState, useEffect } from 'react'
-import { HiPlus, HiPencil, HiTrash, HiArrowLeft } from 'react-icons/hi2'
+import React, { useState, useEffect, useRef } from 'react'
+import { HiPlus, HiPencil, HiTrash, HiArrowLeft, HiChevronDown } from 'react-icons/hi2'
 import { useAuth } from '../../contexts/AuthContext'
 import JobOfferApplications from './JobOfferApplications'
 import './JobOffersView.css'
+
+// Common languages for interviews
+const LANGUAGES = [
+  'English',
+  'French',
+  'Spanish',
+  'German',
+  'Italian',
+  'Portuguese',
+  'Arabic',
+  'Chinese',
+  'Japanese',
+  'Korean',
+  'Russian',
+  'Dutch',
+  'Swedish',
+  'Norwegian',
+  'Danish',
+  'Finnish',
+  'Polish',
+  'Turkish',
+  'Hindi',
+  'Hebrew',
+  'Greek',
+  'Czech',
+  'Hungarian',
+  'Romanian',
+  'Bulgarian',
+  'Croatian',
+  'Serbian',
+  'Slovak',
+  'Slovenian',
+  'Ukrainian'
+]
+
+// Custom Dropdown Component
+function CustomDropdown({ value, onChange, options, placeholder, disabled = false }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const dropdownRef = useRef(null)
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsOpen(false)
+      }
+    }
+
+    if (isOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [isOpen])
+
+  const selectedLabel = value ? options.find(opt => opt === value) : placeholder
+
+  return (
+    <div className="custom-dropdown" ref={dropdownRef}>
+      <button
+        type="button"
+        className={`dropdown-button ${isOpen ? 'open' : ''}`}
+        onClick={() => !disabled && setIsOpen(!isOpen)}
+        disabled={disabled}
+      >
+        <span className={!value ? 'placeholder' : ''}>{selectedLabel}</span>
+        <HiChevronDown className={`dropdown-icon ${isOpen ? 'open' : ''}`} />
+      </button>
+      {isOpen && (
+        <div className="dropdown-menu">
+          <div className="dropdown-menu-content">
+            {options.length === 0 ? (
+              <div className="dropdown-item">No options available</div>
+            ) : (
+              options.map((option) => (
+                <div
+                  key={option}
+                  className={`dropdown-item ${value === option ? 'selected' : ''}`}
+                  onClick={() => {
+                    onChange(option)
+                    setIsOpen(false)
+                  }}
+                >
+                  {option}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function JobOffersView({ viewMode = 'card' }) {
   const { authApi } = useAuth()
@@ -17,8 +111,10 @@ function JobOffersView({ viewMode = 'card' }) {
     required_skills: '',
     experience_level: '',
     education_requirements: '',
-    required_languages: '',
-    interview_start_language: ''
+    required_languages: [], // Array instead of JSON string
+    selectedLanguage: '', // Temporary selection for adding languages
+    interview_start_language: '',
+    interview_duration_minutes: 20 // Default 20 minutes
   })
 
   useEffect(() => {
@@ -41,11 +137,15 @@ function JobOffersView({ viewMode = 'card' }) {
   const handleSubmit = async (e) => {
     e.preventDefault()
     try {
+      // Convert arrays to JSON strings for backend, exclude UI-only fields
+      const { selectedLanguage, ...submitData } = formData
+      submitData.required_languages = JSON.stringify(formData.required_languages)
+      
       if (editingOffer) {
-        await authApi.put(`/admin/job-offers/${editingOffer.offer_id}`, formData)
+        await authApi.put(`/admin/job-offers/${editingOffer.offer_id}`, submitData)
         alert('Job offer updated successfully')
       } else {
-        await authApi.post(`/admin/job-offers`, formData)
+        await authApi.post(`/admin/job-offers`, submitData)
         alert('Job offer created successfully')
       }
       setShowForm(false)
@@ -56,8 +156,10 @@ function JobOffersView({ viewMode = 'card' }) {
         required_skills: '',
         experience_level: '',
         education_requirements: '',
-        required_languages: '',
-        interview_start_language: ''
+        required_languages: [],
+        selectedLanguage: '',
+        interview_start_language: '',
+        interview_duration_minutes: 20
       })
       loadJobOffers()
     } catch (error) {
@@ -68,14 +170,31 @@ function JobOffersView({ viewMode = 'card' }) {
 
   const handleEdit = (offer) => {
     setEditingOffer(offer)
+    
+    // Parse required_languages JSON string to array
+    let requiredLanguagesArray = []
+    if (offer.required_languages) {
+      try {
+        requiredLanguagesArray = JSON.parse(offer.required_languages)
+        if (!Array.isArray(requiredLanguagesArray)) {
+          requiredLanguagesArray = []
+        }
+      } catch (e) {
+        console.error('Error parsing required_languages:', e)
+        requiredLanguagesArray = []
+      }
+    }
+    
     setFormData({
       title: offer.title,
       description: offer.description,
       required_skills: offer.required_skills || '',
       experience_level: offer.experience_level || '',
       education_requirements: offer.education_requirements || '',
-      required_languages: offer.required_languages || '',
-      interview_start_language: offer.interview_start_language || ''
+      required_languages: requiredLanguagesArray,
+      selectedLanguage: '',
+      interview_start_language: offer.interview_start_language || '',
+      interview_duration_minutes: offer.interview_duration_minutes || 20
     })
     setShowForm(true)
   }
@@ -120,8 +239,9 @@ function JobOffersView({ viewMode = 'card' }) {
             required_skills: '',
             experience_level: '',
             education_requirements: '',
-            required_languages: '',
-            interview_start_language: ''
+            required_languages: [],
+            interview_start_language: '',
+            interview_duration_minutes: 20
           })
         }}>
           <HiPlus className="icon" />
@@ -176,24 +296,76 @@ function JobOffersView({ viewMode = 'card' }) {
               />
             </div>
             <div className="form-group">
-              <label>Required Languages (JSON array, e.g., ["English", "French"])</label>
-              <input
-                type="text"
-                value={formData.required_languages || ''}
-                onChange={(e) => setFormData({ ...formData, required_languages: e.target.value })}
-                placeholder='["English", "French"]'
-              />
-              <small>Enter languages as a JSON array. Example: ["English", "French", "Spanish"]</small>
+              <label>Required Languages</label>
+              <div className="language-selector">
+                <div className="language-select-row">
+                  <CustomDropdown
+                    value={formData.selectedLanguage}
+                    onChange={(value) => setFormData({ ...formData, selectedLanguage: value })}
+                    options={LANGUAGES.filter(lang => !formData.required_languages.includes(lang))}
+                    placeholder="Select a language..."
+                  />
+                  <button
+                    type="button"
+                    className="add-language-btn"
+                    onClick={() => {
+                      if (formData.selectedLanguage && !formData.required_languages.includes(formData.selectedLanguage)) {
+                        setFormData({
+                          ...formData,
+                          required_languages: [...formData.required_languages, formData.selectedLanguage],
+                          selectedLanguage: ''
+                        })
+                      }
+                    }}
+                    disabled={!formData.selectedLanguage}
+                  >
+                    Add
+                  </button>
+                </div>
+                {formData.required_languages.length > 0 && (
+                  <div className="selected-languages">
+                    {formData.required_languages.map((lang, index) => (
+                      <span key={index} className="language-tag">
+                        {lang}
+                        <button
+                          type="button"
+                          className="remove-language-btn"
+                          onClick={() => {
+                            setFormData({
+                              ...formData,
+                              required_languages: formData.required_languages.filter((_, i) => i !== index)
+                            })
+                          }}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <small>Select a language and click "Add" to add it to the required languages list</small>
             </div>
             <div className="form-group">
               <label>Interview Start Language</label>
-              <input
-                type="text"
-                value={formData.interview_start_language || ''}
-                onChange={(e) => setFormData({ ...formData, interview_start_language: e.target.value })}
-                placeholder="English"
+              <CustomDropdown
+                value={formData.interview_start_language}
+                onChange={(value) => setFormData({ ...formData, interview_start_language: value })}
+                options={LANGUAGES}
+                placeholder="Select a language..."
               />
               <small>The language the AI interviewer should start the interview with</small>
+            </div>
+            <div className="form-group">
+              <label>Interview Duration (minutes)</label>
+              <input
+                type="number"
+                min="5"
+                max="120"
+                value={formData.interview_duration_minutes || 20}
+                onChange={(e) => setFormData({ ...formData, interview_duration_minutes: parseInt(e.target.value) || 20 })}
+              />
+              <small>How long the interview should last (5-120 minutes, default: 20)</small>
             </div>
             <div className="form-actions">
               <button type="submit" className="btn-primary">Save</button>
@@ -206,8 +378,9 @@ function JobOffersView({ viewMode = 'card' }) {
                   required_skills: '',
                   experience_level: '',
                   education_requirements: '',
-                  required_languages: '',
-                  interview_start_language: ''
+                  required_languages: [],
+                  interview_start_language: '',
+                  interview_duration_minutes: 20
                 })
               }}>Cancel</button>
             </div>

@@ -65,9 +65,8 @@ function JobOfferApplications({ jobOffer, onBack, onRefresh }) {
           <span>Back to Job Offers</span>
         </button>
         <h2>{jobOffer.title} - Applications</h2>
-        <button className="refresh-btn" onClick={loadApplications}>
+        <button className="refresh-btn" onClick={loadApplications} title="Refresh">
           <HiArrowPath className="icon" />
-          <span>Refresh</span>
         </button>
       </div>
 

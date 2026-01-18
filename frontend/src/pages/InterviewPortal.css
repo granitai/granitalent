@@ -1,5 +1,8 @@
 .interview-portal {
-  padding: 2rem 0;
+  width: 100%;
+  padding: 2rem;
+  min-height: 100vh;
+  background: var(--bg-secondary);
 }
 
 .portal-header {

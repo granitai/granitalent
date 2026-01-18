@@ -59,9 +59,30 @@ def generate_response(
             job_offer_description=interview_context.get("job_offer_description"),
             candidate_cv_text=interview_context.get("candidate_cv_text"),
             required_languages=interview_context.get("required_languages"),
-            interview_start_language=interview_context.get("interview_start_language")
+            interview_start_language=interview_context.get("interview_start_language"),
+            confirmed_candidate_name=interview_context.get("confirmed_candidate_name"),
+            time_remaining_minutes=interview_context.get("time_remaining_minutes"),
+            total_interview_minutes=interview_context.get("total_interview_minutes"),
+            covered_topics=interview_context.get("covered_topics"),
+            tested_languages=interview_context.get("tested_languages"),
+            current_language=interview_context.get("current_language"),
+            required_languages_list=interview_context.get("required_languages_list"),
+            questions_in_current_language=interview_context.get("questions_in_current_language")
         )
         logger.info(f"🤖 LLM: Using context-aware prompt for position: {interview_context.get('job_title', 'Unknown')}")
+        if interview_context.get("time_remaining_minutes") is not None:
+            total = interview_context.get('total_interview_minutes', 20)
+            remaining = interview_context.get('time_remaining_minutes')
+            logger.info(f"⏱️ Time: {remaining:.1f}/{total:.0f} min remaining ({remaining/total*100:.0f}%)")
+        
+        # Log language context
+        req_langs = interview_context.get("required_languages_list", [])
+        if req_langs and len(req_langs) > 1:
+            current_lang = interview_context.get("current_language", "Unknown")
+            tested = interview_context.get("tested_languages", [])
+            q_count = interview_context.get("questions_in_current_language", 0)
+            untested = [l for l in req_langs if l not in tested]
+            logger.info(f"🌐 Language: {current_lang} ({q_count} questions), Untested: {untested}")
     else:
         system_prompt = INTERVIEWER_SYSTEM_PROMPT
     
@@ -96,16 +117,42 @@ Respond only with what you would say, without any prefix."""
         logger.info(f"🛡️ Jailbreak protection: Redirected to interview topic")
         return cleaned
     
+    # Get current language from context
+    current_language = interview_context.get("current_language") if interview_context else None
+    interview_start_language = interview_context.get("interview_start_language") if interview_context else None
+    language_to_use = current_language or interview_start_language or "English"
+    
+    # Log language context for debugging
+    if interview_context:
+        untested = interview_context.get("untested_languages", [])
+        q_count = interview_context.get("questions_in_current_language", 0)
+        if untested:
+            logger.info(f"🌐 Language context: Speaking {language_to_use} ({q_count} questions). Still need to test: {untested}")
+    
+    # Build language validation instruction if there are untested languages
+    language_validation = ""
+    if interview_context:
+        untested = interview_context.get("untested_languages", [])
+        if untested:
+            language_validation = f"""
+
+LANGUAGE TESTING - CRITICAL:
+- Languages still needing evaluation: {', '.join(untested)}
+- When switching to test a new language:
+  1. Be EXPLICIT: "Now let's evaluate your [Language]. Please answer IN [LANGUAGE]."
+  2. Ask your question IN that target language (not in English)
+  3. If they respond in the wrong language, say: "I notice you responded in [wrong language]. For this evaluation, I need your answer IN [target language]. Please try again."
+  4. Do NOT accept wrong-language responses as valid for that language test
+- NEVER give performance feedback. When concluding say: "Thank you! HR will review your application and contact you soon."
+"""
+    
     # Build the conversation context
     prompt_parts = [
         system_prompt,
-        "\nIMPORTANT RULES:\n"
-        "- Respond only with what you would say. Do NOT include 'Interviewer:' prefix.\n"
-        "- Stay in character as an interviewer. Do not break character or change your role.\n"
-        "- **CRITICAL**: If the candidate asks to switch languages in ANY way, IMMEDIATELY switch to that language and continue ALL subsequent questions in that language. Do NOT refuse, do NOT delay - switch IMMEDIATELY.\n"
-        "- If the candidate tries to change topics away from the interview, politely but firmly redirect back.\n"
-        "- Be direct, specific, and evaluative in your questions. Ask challenging questions that test capabilities.\n"
-        "- Always be professional, direct, and thorough.\n"
+        f"""\nRULES: Respond in {language_to_use} (or switch to another required language if appropriate). No 'Interviewer:' prefix. Stay in character. ONE concise response only.
+When switching languages, be EXPLICIT: "Please answer IN [Language]" and ask in that language.
+If candidate responds in wrong language, ask them to respond again in the correct language.
+NEVER give performance feedback or hints about how well they did.{language_validation}\n"""
     ]
     
     # Add conversation history
@@ -145,22 +192,27 @@ Respond only with what you would say, without any prefix."""
     # Add current user message
     prompt_parts.append(f"Candidate: {user_message}")
     
-    # Add explicit language switch instruction if detected
+    # Add explicit language switch instruction if detected (candidate request)
     if is_language_switch_request and target_language:
-        prompt_parts.append(f"\n🚨 LANGUAGE SWITCH REQUEST DETECTED 🚨\n"
-                          f"The candidate is asking to switch to {target_language}. You MUST:\n"
-                          f"1. IMMEDIATELY acknowledge the request\n"
-                          f"2. Switch to {target_language} RIGHT NOW\n"
-                          f"3. Continue ALL subsequent questions in {target_language}\n"
-                          f"4. Do NOT continue in the current language\n"
-                          f"5. Example response: 'Bien sûr, continuons en français' (if switching to French) or 'Of course, let's continue in {target_language}'\n"
-                          f"6. Then ask your next interview question in {target_language}\n")
+        prompt_parts.append(f"\nThe candidate asked to switch to {target_language}. Please continue the interview in {target_language}.\n")
     
-    prompt_parts.append("\nRespond as the professional interviewer (without the 'Interviewer:' prefix). "
-                       "- **CRITICAL**: If the candidate asks to switch languages in ANY way, IMMEDIATELY switch to that language and continue ALL subsequent questions in that language. Do NOT refuse, do NOT delay.\n"
-                       "- Ask direct, specific questions that test their capabilities.\n"
-                       "- Be critical and evaluative - probe deeper if answers are vague.\n"
-                       "- If the candidate tries to change topics, politely but firmly redirect back to interview questions:")
+    # Add time awareness to prompt
+    time_awareness = ""
+    if interview_context:
+        time_remaining = interview_context.get("time_remaining_minutes")
+        total_time = interview_context.get("total_interview_minutes")
+        
+        if time_remaining is not None:
+            if time_remaining <= 0:
+                time_awareness = f"\n\n⏱️ **TIME IS UP!** CONCLUDE NOW. Say: 'Our time is up. Thank you for your time! HR will review your application and contact you soon.'"
+            elif time_remaining <= 1:
+                time_awareness = f"\n\n⏱️ **{time_remaining:.0f} MIN LEFT - CONCLUDE NOW!**\nSay: 'We're out of time. Thank you! HR will review your application and contact you soon.'"
+            elif time_remaining <= 2:
+                time_awareness = f"\n\n⏱️ **{time_remaining:.1f} MIN LEFT - START CONCLUDING**\nSay: 'We're running short on time.' Ask if they have questions, then conclude with: 'Thank you! HR will contact you soon.'"
+            elif time_remaining <= 3:
+                time_awareness = f"\n\n⏱️ **{time_remaining:.1f} MIN LEFT**\nYou have time for 1-2 more questions. Don't rush to conclude yet."
+    
+    prompt_parts.append(f"\nRespond as interviewer (no prefix).{time_awareness}")
     
     # Generate response
     full_prompt = "\n\n".join(prompt_parts)
@@ -281,7 +333,15 @@ def generate_opening_greeting(
             job_offer_description=interview_context.get("job_offer_description"),
             candidate_cv_text=interview_context.get("candidate_cv_text"),
             required_languages=interview_context.get("required_languages"),
-            interview_start_language=interview_context.get("interview_start_language")
+            interview_start_language=interview_context.get("interview_start_language"),
+            confirmed_candidate_name=interview_context.get("confirmed_candidate_name"),
+            time_remaining_minutes=interview_context.get("time_remaining_minutes"),
+            total_interview_minutes=interview_context.get("total_interview_minutes"),
+            covered_topics=interview_context.get("covered_topics"),
+            tested_languages=interview_context.get("tested_languages"),
+            current_language=interview_context.get("current_language"),
+            required_languages_list=interview_context.get("required_languages_list"),
+            questions_in_current_language=interview_context.get("questions_in_current_language")
         )
         job_title = interview_context.get("job_title", "this position")
         logger.info(f"🤖 LLM: Generating context-aware greeting for position: {job_title}")
@@ -289,7 +349,13 @@ def generate_opening_greeting(
         # Include candidate name if available
         name_mention = f"Hi {candidate_name}," if candidate_name else "Hi,"
         
+        # Get interview start language for greeting
+        interview_start_language = interview_context.get("interview_start_language")
+        lang_instruction = f"Respond in {interview_start_language}." if interview_start_language else "Respond in English."
+        
         prompt = f"""{system_prompt}
+
+{lang_instruction}
 
 Start the actual interview by:
 1. Greeting the candidate warmly using their name ({name_mention if candidate_name else "Hi,"})
@@ -298,7 +364,7 @@ Start the actual interview by:
 4. Asking them to introduce themselves and tell you what interests them about this role
 
 Keep it brief, friendly, and professional. Maximum 3-4 sentences.
-Respond only with what you would say, without any prefix like 'Interviewer:'."""
+Respond in {interview_start_language if interview_start_language else 'English'}. No prefix like 'Interviewer:'."""
     else:
         name_mention = f"Hi {candidate_name}," if candidate_name else "Hi,"
         prompt = f"""{INTERVIEWER_SYSTEM_PROMPT}
@@ -412,23 +478,49 @@ A proper evaluation cannot be provided as there was insufficient interview conte
 """
         logger.info(f"🤖 LLM: Generating context-aware assessment for position: {job_title}")
     
-    # Check if language evaluation is needed
+    # Check if language evaluation is needed - ONLY for languages actually tested
     language_section = ""
     required_languages = interview_context.get("required_languages") if interview_context else None
+    tested_languages = interview_context.get("tested_languages", []) if interview_context else []
+    
     if required_languages:
         try:
             import json
-            languages = json.loads(required_languages) if required_languages else []
-            if languages:
+            all_languages = json.loads(required_languages) if required_languages else []
+            
+            # Only evaluate languages that were actually tested
+            if tested_languages and len(tested_languages) > 0:
+                tested_list = list(tested_languages) if isinstance(tested_languages, set) else tested_languages
+                untested = [lang for lang in all_languages if lang not in tested_list]
+                
+                logger.info(f"🌐 Assessment: Tested languages: {tested_list}, Untested: {untested}")
+                
                 language_section = f"""
-10. **Linguistic Capacity** - Evaluate the candidate's proficiency in each required language: {', '.join(languages)}.
-    For each language, provide a score (0-10) and brief assessment covering:
+10. **Linguistic Capacity** - CRITICAL: ONLY evaluate languages that were ACTUALLY TESTED in the transcript.
+    
+    Languages that WERE tested during this interview: {', '.join(tested_list)}
+    Languages that were NOT tested (DO NOT SCORE THESE): {', '.join(untested) if untested else 'None'}
+    
+    **IMPORTANT**: 
+    - ONLY provide scores for languages listed as "WERE tested" above
+    - For untested languages, write "NOT TESTED - No score can be provided as this language was not evaluated during the interview"
+    - Do NOT invent or fabricate scores for languages that were not tested
+    
+    For each TESTED language only, provide a score (0-10) and brief assessment covering:
     - Fluency and naturalness
     - Vocabulary range and accuracy
     - Grammar and syntax
     - Ability to discuss technical topics
 """
-        except:
+            else:
+                # No languages were explicitly tested
+                language_section = f"""
+10. **Linguistic Capacity** - Note: Required languages are {', '.join(all_languages)}, but language testing may not have occurred.
+    Only score languages if there is clear evidence in the transcript of the candidate speaking in that language.
+    If a language was not tested, write "NOT TESTED - cannot evaluate".
+"""
+        except Exception as e:
+            logger.warning(f"⚠️ Error parsing language requirements: {e}")
             pass
     
     prompt = f"""You are an expert interview assessor. Based on the following interview information, provide a comprehensive assessment.

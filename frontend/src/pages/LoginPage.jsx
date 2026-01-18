@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { HiLockClosed, HiUser } from 'react-icons/hi2'
+import { HiLockClosed, HiUser, HiBriefcase } from 'react-icons/hi2'
 import './LoginPage.css'
 
 function LoginPage() {
@@ -82,6 +82,19 @@ function LoginPage() {
             {loading ? 'Logging in...' : 'Login'}
           </button>
         </form>
+
+        <div className="login-divider">
+          <span>or</span>
+        </div>
+
+        <button
+          type="button"
+          className="candidate-portal-button"
+          onClick={() => navigate('/candidates')}
+        >
+          <HiBriefcase className="button-icon" />
+          <span>Browse Job Offers</span>
+        </button>
       </div>
     </div>
   )

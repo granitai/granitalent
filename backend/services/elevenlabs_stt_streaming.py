@@ -76,8 +76,14 @@ class ElevenLabsSTTStreaming:
             True if connection successful, False otherwise
         """
         try:
+            # Reload API key from .env file to get latest value
+            from dotenv import load_dotenv
+            import os
+            load_dotenv(override=True)  # override=True ensures new values replace old ones
+            api_key = os.getenv("ELEVENLABS_API_KEY")
+            
             # Validate API key
-            if not ELEVENLABS_API_KEY:
+            if not api_key:
                 logger.error("❌ ELEVENLABS_API_KEY is not set")
                 return False
             
@@ -97,7 +103,7 @@ class ElevenLabsSTTStreaming:
             # Version 14+: additional_headers (list of tuples)
             if websockets_version.startswith('12.') or websockets_version.startswith('13.'):
                 # Use extra_headers for v12/v13
-                headers = {"xi-api-key": ELEVENLABS_API_KEY}
+                headers = {"xi-api-key": api_key}
                 self.websocket = await websockets.connect(
                     url,
                     extra_headers=headers,
@@ -106,7 +112,7 @@ class ElevenLabsSTTStreaming:
                 )
             else:
                 # Use additional_headers for v14+
-                headers = [("xi-api-key", ELEVENLABS_API_KEY)]
+                headers = [("xi-api-key", api_key)]
                 self.websocket = await websockets.connect(
                     url,
                     additional_headers=headers,

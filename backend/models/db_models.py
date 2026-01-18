@@ -24,6 +24,7 @@ class JobOffer(Base):
     education_requirements = Column(Text, default="")
     required_languages = Column(Text, default="")  # JSON array of languages, e.g., ["English", "French"]
     interview_start_language = Column(String, default="")  # Language to start the interview with
+    interview_duration_minutes = Column(Integer, default=20)  # Interview duration in minutes (default 20)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
