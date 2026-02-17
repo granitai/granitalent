@@ -77,6 +77,66 @@ def migrate_database():
             else:
                 logger.info("Column 'interview_duration_minutes' already exists")
             
+            # Check if custom_questions column exists
+            result = conn.execute(text("""
+                SELECT COUNT(*) as count 
+                FROM pragma_table_info('job_offers') 
+                WHERE name='custom_questions'
+            """))
+            has_custom_questions = result.fetchone()[0] > 0
+            
+            # Add custom_questions column if it doesn't exist
+            if not has_custom_questions:
+                logger.info("Adding 'custom_questions' column to job_offers table...")
+                conn.execute(text("""
+                    ALTER TABLE job_offers 
+                    ADD COLUMN custom_questions TEXT DEFAULT ''
+                """))
+                conn.commit()
+                logger.info("✅ Added 'custom_questions' column")
+            else:
+                logger.info("Column 'custom_questions' already exists")
+            
+            # Check if evaluation_weights column exists
+            result = conn.execute(text("""
+                SELECT COUNT(*) as count 
+                FROM pragma_table_info('job_offers') 
+                WHERE name='evaluation_weights'
+            """))
+            has_evaluation_weights = result.fetchone()[0] > 0
+            
+            # Add evaluation_weights column if it doesn't exist
+            if not has_evaluation_weights:
+                logger.info("Adding 'evaluation_weights' column to job_offers table...")
+                conn.execute(text("""
+                    ALTER TABLE job_offers 
+                    ADD COLUMN evaluation_weights TEXT DEFAULT ''
+                """))
+                conn.commit()
+                logger.info("✅ Added 'evaluation_weights' column")
+            else:
+                logger.info("Column 'evaluation_weights' already exists")
+            
+            # Check if interview_mode column exists
+            result = conn.execute(text("""
+                SELECT COUNT(*) as count 
+                FROM pragma_table_info('job_offers') 
+                WHERE name='interview_mode'
+            """))
+            has_interview_mode = result.fetchone()[0] > 0
+            
+            # Add interview_mode column if it doesn't exist
+            if not has_interview_mode:
+                logger.info("Adding 'interview_mode' column to job_offers table...")
+                conn.execute(text("""
+                    ALTER TABLE job_offers 
+                    ADD COLUMN interview_mode TEXT DEFAULT 'realtime'
+                """))
+                conn.commit()
+                logger.info("✅ Added 'interview_mode' column (default: 'realtime')")
+            else:
+                logger.info("Column 'interview_mode' already exists")
+            
             # Check and add missing columns in applications table
             logger.info("Checking applications table for missing columns...")
             
@@ -90,6 +150,8 @@ def migrate_database():
             expected_columns = {
                 'cover_letter_filename': ('TEXT', None),
                 'cv_filename': ('TEXT', None),
+                'is_archived': ('INTEGER', '0'),
+                'archived_at': ('DATETIME', None),
             }
             
             # Add missing columns
@@ -118,6 +180,12 @@ def migrate_database():
             # Define expected columns for interviews table
             expected_interview_columns = {
                 'evaluation_scores': ('TEXT', None),
+                'recording_audio': ('TEXT', None),
+                'provider_preferences': ('TEXT', None),
+                'audio_segments': ('TEXT', None),
+                'recording_video': ('TEXT', None),
+                'is_archived': ('INTEGER', '0'),
+                'archived_at': ('DATETIME', None),
             }
             
             # Add missing columns

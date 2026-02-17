@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import { HiMicrophone, HiBriefcase, HiClock, HiCheckCircle, HiXCircle, HiPlay, HiEye } from 'react-icons/hi2'
 import InterviewInterface from '../components/InterviewInterface'
@@ -9,6 +10,7 @@ import './InterviewPortal.css'
 const API_BASE_URL = '/api'
 
 function InterviewPortal() {
+  const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [interviews, setInterviews] = useState([])
   const [loading, setLoading] = useState(false)
@@ -45,7 +47,12 @@ function InterviewPortal() {
     }
   }
 
-  const handleStartInterview = async (interview) => {
+  const handleStartInterview = async (e, interview) => {
+    if (e) {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    
     if (interview.status === 'completed') {
       // Load full details for completed interviews
       try {
@@ -58,8 +65,45 @@ function InterviewPortal() {
         setError('Error loading interview details')
       }
     } else {
-      // Start active interview
-      setActiveInterview(interview)
+      // Get interview mode from the interview object (already in the list response)
+      // Or fetch details if mode is not available
+      let interviewMode = interview.job_offer?.interview_mode || interview.interview_mode
+      
+      // If mode is still not available, fetch interview details
+      if (!interviewMode) {
+        try {
+          const response = await axios.get(`${API_BASE_URL}/candidates/interviews/${interview.interview_id}`, {
+            params: { email: email.trim() }
+          })
+          interviewMode = response.data.job_offer?.interview_mode || 'realtime'
+        } catch (err) {
+          console.error('Error loading interview details for mode:', err)
+          interviewMode = 'realtime' // Default fallback
+        }
+      }
+      
+      console.log('Starting interview with mode:', interviewMode, 'Interview object:', interview)
+      
+      // Navigate to appropriate page based on mode
+      if (interviewMode === 'asynchronous') {
+        // Navigate to asynchronous interview page
+        const url = `/interview/async?interview_id=${interview.interview_id}&email=${encodeURIComponent(email.trim())}`
+        console.log('Navigating to:', url)
+        navigate(url)
+        return
+      } else {
+        // Use realtime interview (existing behavior)
+        const interviewWithDetails = {
+          ...interview,
+          email: email.trim(),
+          interview_mode: interviewMode || 'realtime',
+          job_offer: {
+            ...interview.job_offer,
+            interview_mode: interviewMode || 'realtime'
+          }
+        }
+        setActiveInterview(interviewWithDetails)
+      }
     }
   }
 
@@ -148,8 +192,9 @@ function InterviewPortal() {
                 <div className="card-actions">
                   {interview.status === 'pending' && (
                     <button 
+                      type="button"
                       className="start-btn"
-                      onClick={() => handleStartInterview(interview)}
+                      onClick={(e) => handleStartInterview(e, interview)}
                     >
                       <HiPlay className="icon" />
                       <span>Start Interview</span>

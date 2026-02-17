@@ -67,7 +67,9 @@ def generate_response(
             tested_languages=interview_context.get("tested_languages"),
             current_language=interview_context.get("current_language"),
             required_languages_list=interview_context.get("required_languages_list"),
-            questions_in_current_language=interview_context.get("questions_in_current_language")
+            questions_in_current_language=interview_context.get("questions_in_current_language"),
+            custom_questions=interview_context.get("custom_questions"),
+            evaluation_weights=interview_context.get("evaluation_weights")
         )
         logger.info(f"🤖 LLM: Using context-aware prompt for position: {interview_context.get('job_title', 'Unknown')}")
         if interview_context.get("time_remaining_minutes") is not None:
@@ -341,7 +343,9 @@ def generate_opening_greeting(
             tested_languages=interview_context.get("tested_languages"),
             current_language=interview_context.get("current_language"),
             required_languages_list=interview_context.get("required_languages_list"),
-            questions_in_current_language=interview_context.get("questions_in_current_language")
+            questions_in_current_language=interview_context.get("questions_in_current_language"),
+            custom_questions=interview_context.get("custom_questions"),
+            evaluation_weights=interview_context.get("evaluation_weights")
         )
         job_title = interview_context.get("job_title", "this position")
         logger.info(f"🤖 LLM: Generating context-aware greeting for position: {job_title}")
@@ -461,6 +465,8 @@ A proper evaluation cannot be provided as there was insufficient interview conte
     
     # Build context section if available
     context_section = ""
+    evaluation_weights_dict = {}
+    custom_questions_list = []
     if interview_context:
         job_title = interview_context.get("job_title", "Unknown Position")
         job_description = interview_context.get("job_offer_description", "")
@@ -476,6 +482,24 @@ A proper evaluation cannot be provided as there was insufficient interview conte
 {cv_text[:2000]}{"..." if len(cv_text) > 2000 else ""}
 
 """
+        # Parse evaluation weights
+        eval_weights = interview_context.get("evaluation_weights", "")
+        if eval_weights:
+            try:
+                import json
+                evaluation_weights_dict = json.loads(eval_weights) if eval_weights else {}
+            except:
+                pass
+        
+        # Parse custom questions
+        custom_q = interview_context.get("custom_questions", "")
+        if custom_q:
+            try:
+                import json
+                custom_questions_list = json.loads(custom_q) if custom_q else []
+            except:
+                pass
+        
         logger.info(f"🤖 LLM: Generating context-aware assessment for position: {job_title}")
     
     # Check if language evaluation is needed - ONLY for languages actually tested
@@ -523,16 +547,36 @@ A proper evaluation cannot be provided as there was insufficient interview conte
             logger.warning(f"⚠️ Error parsing language requirements: {e}")
             pass
     
+    # Build weighted evaluation section
+    weight_instructions = ""
+    if evaluation_weights_dict:
+        weight_instructions = "\n\n**RECRUITER'S EVALUATION PRIORITIES (USE WEIGHTED SCORING):**\n"
+        weight_instructions += "The recruiter has specified these importance weights. Apply them when calculating the overall score.\n"
+        sorted_weights = sorted(evaluation_weights_dict.items(), key=lambda x: x[1], reverse=True)
+        for category, weight in sorted_weights:
+            category_display = category.replace("_", " ").title()
+            weight_instructions += f"  • {category_display}: Weight = {weight}/10\n"
+        weight_instructions += "\n**WEIGHTED SCORE CALCULATION**: Overall Score = Sum(score × weight) / Sum(weights)\n"
+    
+    # Build custom questions section
+    custom_questions_section = ""
+    if custom_questions_list:
+        custom_questions_section = "\n\n**RECRUITER'S CUSTOM QUESTIONS** - Evaluate if these were addressed:\n"
+        for i, q in enumerate(custom_questions_list, 1):
+            custom_questions_section += f"  {i}. {q}\n"
+        custom_questions_section += "\nIn your assessment, note whether each custom question was adequately addressed.\n"
+    
     prompt = f"""You are an expert interview assessor. Based on the following interview information, provide a comprehensive assessment.
 
 {context_section}=== INTERVIEW TRANSCRIPT ===
 {transcript_text}
-
+{weight_instructions}{custom_questions_section}
 CRITICAL INSTRUCTIONS:
 1. **ONLY USE WHAT IS IN THE TRANSCRIPT ABOVE** - Do NOT invent, assume, or make up any candidate responses that are not explicitly shown in the transcript.
 2. **If the candidate did not answer a question, state that clearly** - Do NOT pretend they answered it.
 3. **If the candidate gave minimal responses, reflect that in your scores** - Low engagement should result in lower scores, not made-up positive evaluations.
 4. **Only provide an evaluation if there is meaningful interview conversation** - If the candidate barely spoke, gave only one-word answers, or didn't engage, state that clearly instead of giving scores.
+5. **Apply recruiter weights if provided** - When calculating overall score, use weighted average based on recruiter priorities.
 
 Please provide a detailed assessment in the following format. For each evaluation axis, provide:
 1. A score from 0-10
@@ -548,11 +592,12 @@ Please provide a detailed assessment in the following format. For each evaluatio
 **Additional Sections:**
 - **Areas of Strength** - What did the candidate do well? ONLY mention things they actually demonstrated in the transcript.
 - **Areas for Improvement** - What could they work on? Be honest about what was missing or insufficient.
+{"- **Custom Questions Coverage** - Were the recruiter's specific questions addressed adequately?" if custom_questions_list else ""}
 - **Hiring Recommendation** - Would you recommend this candidate for THIS specific position? Why or why not? Base this ONLY on their actual performance in the transcript.
 
 At the end, provide:
-- **Overall Score** (0-10) - Calculate the mean of all axis scores
-- **Score Calculation** - Show how the overall score was calculated (mean of all axis scores)
+- **Overall Score** (0-10) - {"Calculate using WEIGHTED average based on recruiter priorities above" if evaluation_weights_dict else "Calculate the mean of all axis scores"}
+- **Score Calculation** - Show how the overall score was calculated {"(weighted by recruiter priorities)" if evaluation_weights_dict else "(mean of all axis scores)"}
 
 REMEMBER: Every claim you make must be supported by actual text from the transcript above. If something wasn't discussed, don't pretend it was. If the candidate didn't answer questions, reflect that honestly in your assessment."""
     

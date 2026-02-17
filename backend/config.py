@@ -162,7 +162,9 @@ def build_interviewer_system_prompt(
     tested_languages: list = None,
     current_language: str = None,
     required_languages_list: list = None,
-    questions_in_current_language: int = None
+    questions_in_current_language: int = None,
+    custom_questions: str = None,
+    evaluation_weights: str = None
 ) -> str:
     """
     Build a context-aware system prompt for the interviewer.
@@ -213,6 +215,53 @@ def build_interviewer_system_prompt(
         cv_preview = candidate_cv_text[:2000] + ("..." if len(candidate_cv_text) > 2000 else "")
         prompt_parts.append("\n\n=== CANDIDATE PROFILE (from CV) ===")
         prompt_parts.append(cv_preview)
+    
+    # Add custom questions if provided by recruiter
+    custom_questions_list = []
+    if custom_questions:
+        try:
+            import json
+            custom_questions_list = json.loads(custom_questions) if custom_questions else []
+            if custom_questions_list and len(custom_questions_list) > 0:
+                prompt_parts.append("\n\n=== RECRUITER'S CUSTOM QUESTIONS (MUST ASK) ===")
+                prompt_parts.append("**CRITICAL**: The recruiter has specified these questions to be asked during the interview.")
+                prompt_parts.append("You MUST ask ALL of these questions during the interview:")
+                for i, question in enumerate(custom_questions_list, 1):
+                    prompt_parts.append(f"  {i}. {question}")
+                prompt_parts.append("\n**Instructions**: Integrate these questions naturally into the conversation. You can rephrase them slightly to fit the flow, but ensure all topics are covered.")
+        except:
+            pass
+    
+    # Add evaluation weights if provided by recruiter
+    weights_dict = {}
+    if evaluation_weights:
+        try:
+            import json
+            weights_dict = json.loads(evaluation_weights) if evaluation_weights else {}
+            if weights_dict:
+                prompt_parts.append("\n\n=== EVALUATION PRIORITIES (RECRUITER'S WEIGHTS) ===")
+                prompt_parts.append("**CRITICAL**: The recruiter has specified these evaluation priorities.")
+                prompt_parts.append("Higher weight (1-10) = MORE important. Focus your questions accordingly.\n")
+                
+                # Sort weights by value (highest first) to show priorities
+                sorted_weights = sorted(weights_dict.items(), key=lambda x: x[1], reverse=True)
+                
+                for category, weight in sorted_weights:
+                    weight_int = int(weight)
+                    importance = "🔴 HIGHEST PRIORITY" if weight_int >= 9 else "🟠 HIGH PRIORITY" if weight_int >= 7 else "🟡 MODERATE" if weight_int >= 5 else "⚪ LOWER PRIORITY"
+                    category_display = category.replace("_", " ").title()
+                    prompt_parts.append(f"  • {category_display}: {weight_int}/10 - {importance}")
+                
+                # Add specific instructions based on priorities
+                high_priority_categories = [cat for cat, w in sorted_weights if int(w) >= 7]
+                if high_priority_categories:
+                    prompt_parts.append(f"\n**FOCUS AREAS**: Spend MORE time and ask MORE questions about: {', '.join([c.replace('_', ' ').title() for c in high_priority_categories])}")
+                
+                # Special instruction for language proficiency if it's high priority
+                if weights_dict.get("language_proficiency", 0) >= 7:
+                    prompt_parts.append("\n**LANGUAGE FOCUS**: Language proficiency is a high priority. The conversation itself serves as an evaluation - engage in substantive discussions that allow the candidate to demonstrate fluency, vocabulary, and communication clarity.")
+        except:
+            pass
     
     # Add confirmed candidate name (CRITICAL - always use this, never change it)
     if confirmed_candidate_name:
@@ -291,7 +340,12 @@ def build_interviewer_system_prompt(
         prompt_parts.append("- Get the candidate's answer")
         prompt_parts.append("- Then IMMEDIATELY move to a DIFFERENT experience/project/skill from their CV")
         prompt_parts.append("- Do NOT stay on the same topic asking follow-ups like 'Can you elaborate?', 'What challenges?', 'Which metrics?' - move on!")
-        prompt_parts.append("**Cover these different areas systematically**:")
+        
+        # Adjust coverage areas based on evaluation weights
+        if weights_dict:
+            prompt_parts.append("**Cover these areas, PRIORITIZING high-weight categories**:")
+        else:
+            prompt_parts.append("**Cover these different areas systematically**:")
         prompt_parts.append("- Different work experiences/internships from CV")
         prompt_parts.append("- Different projects mentioned in CV")
         prompt_parts.append("- Different skills/technologies from CV")
@@ -299,10 +353,31 @@ def build_interviewer_system_prompt(
         prompt_parts.append("- Problem-solving scenarios")
         prompt_parts.append("- Motivation and interest in the role")
         prompt_parts.append("- Job-specific requirements from the job description")
+        if custom_questions_list:
+            prompt_parts.append("- **ALL recruiter's custom questions listed above**")
     else:
         prompt_parts.append(f"\n\n=== QUESTION COVERAGE STRATEGY ===")
         prompt_parts.append("**CRITICAL RULE - ONE QUESTION PER TOPIC**: After asking about one experience/project/skill and getting an answer, you MUST move to a DIFFERENT topic. Do NOT ask multiple follow-up questions on the same thing.")
-        prompt_parts.append("**YOU MUST systematically cover ALL aspects**:")
+        
+        # Provide different guidance based on whether custom questions exist
+        if custom_questions_list:
+            prompt_parts.append("**PRIORITY**: Ask the recruiter's custom questions listed above!")
+            prompt_parts.append("**Also cover these areas**:")
+        elif weights_dict:
+            prompt_parts.append("**Prioritize questions based on the recruiter's evaluation weights above.**")
+            prompt_parts.append("**Areas to cover (focus on high-weight categories)**:")
+        else:
+            prompt_parts.append("**Ask VARIED questions - NOT just behavioral 'tell me about a time' questions!**")
+            prompt_parts.append("**Include these question types**:")
+            prompt_parts.append("- **Technical/Knowledge questions**: 'What is...?', 'How does X work?', 'Explain the concept of...'")
+            prompt_parts.append("- **Scenario/Problem-solving**: 'How would you approach...?', 'What would you do if...?'")
+            prompt_parts.append("- **Opinion/Perspective**: 'What do you think about...?', 'Why did you choose...?'")
+            prompt_parts.append("- **Role-specific**: Questions directly related to the job requirements")
+            prompt_parts.append("- **Motivation**: 'What interests you about...?', 'Why are you applying for...?'")
+            prompt_parts.append("**AVOID**: Only asking repetitive behavioral questions like 'Tell me about a time when...'")
+            prompt_parts.append("")
+        
+        prompt_parts.append("**Cover these areas systematically**:")
         prompt_parts.append("- Different work experiences/internships from the CV (ask about ONE, then move to another)")
         prompt_parts.append("- Different projects from the CV (ask about ONE, then move to another)")
         prompt_parts.append("- Different skills/technologies from the CV")

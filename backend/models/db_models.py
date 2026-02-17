@@ -25,6 +25,19 @@ class JobOffer(Base):
     required_languages = Column(Text, default="")  # JSON array of languages, e.g., ["English", "French"]
     interview_start_language = Column(String, default="")  # Language to start the interview with
     interview_duration_minutes = Column(Integer, default=20)  # Interview duration in minutes (default 20)
+    
+    # Custom interview questions (JSON array of strings)
+    # e.g., ["What experience do you have with Python?", "Describe a challenging project"]
+    custom_questions = Column(Text, default="")
+    
+    # Evaluation weights (JSON object with category weights, values 1-10)
+    # e.g., {"technical_skills": 5, "communication": 8, "problem_solving": 6, "language_proficiency": 10, "job_fit": 7}
+    # Higher weight = more important, AI will focus more on that aspect during interview
+    evaluation_weights = Column(Text, default="")
+    
+    # Interview mode: "realtime" (default) or "asynchronous"
+    interview_mode = Column(String, default="realtime")
+    
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -81,6 +94,10 @@ class Application(Base):
     interview_assessment = Column(Text, nullable=True)
     interview_recommendation = Column(String, nullable=True)  # "recommended", "not_recommended", null
     
+    # Archive flag
+    is_archived = Column(Boolean, default=False)  # Soft archive - hidden from main view but not deleted
+    archived_at = Column(DateTime, nullable=True)
+    
     # Timestamps
     submitted_at = Column(DateTime, default=func.now())
     created_at = Column(DateTime, default=func.now())
@@ -134,8 +151,25 @@ class Interview(Base):
     evaluation_scores = Column(Text, nullable=True)  # JSON with detailed scores per axis
     # Example: {"technical_skills": 8, "job_fit": 7, "communication": 9, "problem_solving": 8, "cv_consistency": 7, "linguistic_capacity": {"English": 9, "French": 8}, "overall_score": 7.8}
     
+    # Interview recording (stored as base64 encoded audio or file path)
+    recording_audio = Column(Text, nullable=True)  # Base64 encoded audio file of the entire interview (deprecated, use audio_segments)
+    
+    # Audio segments - stores question/answer audio separately like WhatsApp messages
+    # JSON format: [{"type": "question"|"answer", "question_number": int, "audio": base64, "format": "mp3"|"webm", "text": str, "timestamp": iso}]
+    audio_segments = Column(Text, nullable=True)  # JSON array of audio segments
+    
+    # Video recording (stores relative path to the video file in uploads directory)
+    recording_video = Column(String, nullable=True)  # Path to video file (e.g., "videos/interview_id.webm")
+    
+    # Provider preferences (stored as JSON string)
+    provider_preferences = Column(Text, nullable=True)  # JSON: {"tts_provider": "...", "tts_model": "...", "stt_provider": "...", "stt_model": "...", "llm_provider": "...", "llm_model": "..."}
+    
     # Status
     status = Column(String, default="pending")  # "pending", "completed", "cancelled"
+    
+    # Archive flag
+    is_archived = Column(Boolean, default=False)  # Soft archive - hidden from main view but not deleted
+    archived_at = Column(DateTime, nullable=True)
     
     # Timestamps
     created_at = Column(DateTime, default=func.now())

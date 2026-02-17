@@ -43,6 +43,12 @@ function InterviewInviteModal({ application, onClose, onSuccess }) {
 
         <div className="modal-body">
           <p>Send an interview invitation to <strong>{application.candidate.full_name}</strong></p>
+          {application.interviews && application.interviews.length > 0 && (
+            <div className="existing-interviews-notice">
+              <p><strong>Note:</strong> This candidate has {application.interviews.length} existing interview attempt(s).</p>
+              <p className="text-muted">Creating a new interview will add a new attempt. Previous interviews and their assessments will be preserved.</p>
+            </div>
+          )}
           <p className="text-muted">Email integration will be added later. For now, this updates the application status.</p>
 
           <form onSubmit={handleSubmit}>

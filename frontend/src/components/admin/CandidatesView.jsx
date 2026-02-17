@@ -60,30 +60,67 @@ function CandidatesView({ viewMode = 'card' }) {
       </div>
 
       <div className={`candidates-list ${viewMode === 'row' ? 'row-view' : 'card-view'}`}>
+        {/* Table Header for Row View */}
+        {viewMode === 'row' && candidates.length > 0 && (
+          <div className="table-header-row">
+            <div className="th-cell">Name</div>
+            <div className="th-cell">Applications</div>
+            <div className="th-cell">Email</div>
+            <div className="th-cell">Phone</div>
+            <div className="th-cell">Latest Application</div>
+            <div className="th-cell">Actions</div>
+          </div>
+        )}
         {candidates.length === 0 ? (
           <p className="no-results">No candidates found</p>
         ) : (
           candidates.map(candidate => (
             <div key={candidate.candidate_id} className={`candidate-card ${viewMode === 'row' ? 'row-layout' : ''}`}>
-              <div className="card-header">
-                <h3>{candidate.full_name}</h3>
-                <span className="applications-count">{candidate.total_applications} application(s)</span>
-              </div>
-              <div className="card-body">
-                <p><strong>Email:</strong> {candidate.email}</p>
-                {candidate.phone && <p><strong>Phone:</strong> {candidate.phone}</p>}
-                {candidate.latest_application && (
-                  <p><strong>Latest Application:</strong> {new Date(candidate.latest_application).toLocaleDateString()}</p>
-                )}
-              </div>
-              <div className="card-actions">
-                <button
-                  className="view-btn"
-                  onClick={() => handleViewCandidate(candidate.email)}
-                >
-                  View All Applications
-                </button>
-              </div>
+              {viewMode === 'row' ? (
+                /* Row View - Values Only */
+                <>
+                  <div className="row-cell name-cell">
+                    <span className="candidate-name">{candidate.full_name}</span>
+                  </div>
+                  <div className="row-cell">
+                    <span className="applications-count">{candidate.total_applications}</span>
+                  </div>
+                  <div className="row-cell">{candidate.email}</div>
+                  <div className="row-cell">{candidate.phone || '-'}</div>
+                  <div className="row-cell">{candidate.latest_application ? new Date(candidate.latest_application).toLocaleDateString() : '-'}</div>
+                  <div className="row-cell actions-cell">
+                    <button
+                      className="view-btn"
+                      onClick={() => handleViewCandidate(candidate.email)}
+                    >
+                      View All Applications
+                    </button>
+                  </div>
+                </>
+              ) : (
+                /* Card View - Original with Labels */
+                <>
+                  <div className="card-header">
+                    <h3>{candidate.full_name}</h3>
+                    <span className="applications-count">{candidate.total_applications} application(s)</span>
+                  </div>
+                  <div className="card-body">
+                    <p><strong>Email:</strong> {candidate.email}</p>
+                    {candidate.phone && <p><strong>Phone:</strong> {candidate.phone}</p>}
+                    {candidate.latest_application && (
+                      <p><strong>Latest Application:</strong> {new Date(candidate.latest_application).toLocaleDateString()}</p>
+                    )}
+                  </div>
+                  <div className="card-actions">
+                    <button
+                      className="view-btn"
+                      onClick={() => handleViewCandidate(candidate.email)}
+                    >
+                      View All Applications
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           ))
         )}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { HiMicrophone, HiStop, HiXMark, HiSpeakerWave } from 'react-icons/hi2'
+import { HiMicrophone, HiStop, HiXMark, HiSpeakerWave, HiVideoCamera } from 'react-icons/hi2'
 import axios from 'axios'
 import './InterviewInterface.css'
 
@@ -37,7 +37,7 @@ function InterviewInterface({ interview, onClose }) {
   const [isEndingInterview, setIsEndingInterview] = useState(false)
   const [timeRemaining, setTimeRemaining] = useState(null) // in seconds
   const [timeLimitMinutes, setTimeLimitMinutes] = useState(null)
-  
+
   // Provider/Model selection state
   const [providersConfig, setProvidersConfig] = useState(null)
   const [ttsProvider, setTtsProvider] = useState('')
@@ -46,7 +46,7 @@ function InterviewInterface({ interview, onClose }) {
   const [sttModel, setSttModel] = useState('')
   const [llmProvider, setLlmProvider] = useState('')
   const [llmModel, setLlmModel] = useState('')
-  
+
   const wsRef = useRef(null)
   const audioContextRef = useRef(null)
   const analyserRef = useRef(null)
@@ -76,6 +76,12 @@ function InterviewInterface({ interview, onClose }) {
   const isPlayingQueueRef = useRef(false)  // Whether we're currently playing from queue
   const lastStrongSpeechRef = useRef(null)  // Track last strong speech for failsafe
 
+  // Video recording refs
+  const fullInterviewRecorderRef = useRef(null)
+  const fullInterviewChunksRef = useRef([])
+  const fullInterviewStreamRef = useRef(null)
+  const videoPreviewRef = useRef(null)
+
   // Load providers on mount
   useEffect(() => {
     loadProviders()
@@ -88,15 +94,15 @@ function InterviewInterface({ interview, onClose }) {
       setError('Invalid interview data. Please try again.')
       return
     }
-    
+
     if (!interview.application_id && !interview.interview_id) {
       setError('Missing interview information. Please contact support.')
       return
     }
-    
+
     // Don't auto-connect - wait for user to start
     updateStatus('Ready to start', '')
-    
+
     return () => {
       cleanupResources()
     }
@@ -108,21 +114,21 @@ function InterviewInterface({ interview, onClose }) {
       const response = await axios.get(`${API_BASE_URL}/providers`)
       const config = response.data
       setProvidersConfig(config)
-      
+
       // Set defaults
       setTtsProvider(config.defaults.tts_provider)
       setSttProvider(config.defaults.stt_provider)
       setLlmProvider(config.defaults.llm_provider)
-      
+
       // Set default models
       const ttsDefaultModel = config.tts[config.defaults.tts_provider]?.default_model
       const sttDefaultModel = config.stt[config.defaults.stt_provider]?.default_model
       const llmDefaultModel = config.llm[config.defaults.llm_provider]?.default_model
-      
+
       if (ttsDefaultModel) setTtsModel(ttsDefaultModel)
       if (sttDefaultModel) setSttModel(sttDefaultModel)
       if (llmDefaultModel) setLlmModel(llmDefaultModel)
-      
+
       updateStatus('Ready to start', '')
     } catch (error) {
       console.error('Failed to load providers:', error)
@@ -139,7 +145,7 @@ function InterviewInterface({ interview, onClose }) {
 
   const updateModelOptions = (type) => {
     if (!providersConfig) return
-    
+
     let provider, setModel
     switch (type) {
       case 'tts':
@@ -157,14 +163,14 @@ function InterviewInterface({ interview, onClose }) {
       default:
         return
     }
-    
+
     const providerConfig = providersConfig[type]?.[provider]
     if (providerConfig) {
       const defaultModel = providerConfig.default_model
       if (defaultModel) {
         setModel(defaultModel)
       }
-      
+
       // Update streaming mode for STT
       if (type === 'stt') {
         isStreamingModeRef.current = provider === 'elevenlabs_streaming'
@@ -214,45 +220,149 @@ function InterviewInterface({ interview, onClose }) {
       wsRef.current.close()
       wsRef.current = null
     }
-    
+
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(track => track.stop())
       mediaStreamRef.current = null
     }
-    
+
+    // Clean up video recording stream
+    if (fullInterviewStreamRef.current) {
+      fullInterviewStreamRef.current.getTracks().forEach(track => track.stop())
+      fullInterviewStreamRef.current = null
+    }
+    if (videoPreviewRef.current) {
+      videoPreviewRef.current.srcObject = null
+    }
+
     if (audioContextRef.current) {
       audioContextRef.current.close()
       audioContextRef.current = null
     }
-    
+
     if (vadIntervalRef.current) {
       clearInterval(vadIntervalRef.current)
       vadIntervalRef.current = null
     }
-    
+
     if (countdownIntervalRef.current) {
       clearInterval(countdownIntervalRef.current)
       countdownIntervalRef.current = null
     }
-    
+
     stopCurrentAudio()
     isAudioPlayingRef.current = false
     pendingListenRef.current = false
+  }
+
+  // ========== VIDEO RECORDING FUNCTIONS ==========
+  const startFullInterviewRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+      fullInterviewStreamRef.current = stream
+
+      // Show video preview
+      if (videoPreviewRef.current) {
+        videoPreviewRef.current.srcObject = stream
+        videoPreviewRef.current.muted = true
+      }
+
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp8,opus'
+      })
+      fullInterviewRecorderRef.current = mediaRecorder
+      fullInterviewChunksRef.current = []
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          fullInterviewChunksRef.current.push(event.data)
+        }
+      }
+
+      mediaRecorder.start(1000) // Collect data every second
+      console.log('🎥 Started full interview video recording')
+    } catch (err) {
+      console.error('Error starting full interview recording:', err)
+      // Don't block interview if video recording fails
+    }
+  }
+
+  const stopFullInterviewRecording = async () => {
+    return new Promise((resolve) => {
+      if (fullInterviewRecorderRef.current && fullInterviewRecorderRef.current.state !== 'inactive') {
+        fullInterviewRecorderRef.current.onstop = async () => {
+          try {
+            // Process video recording
+            if (fullInterviewChunksRef.current.length > 0) {
+              const videoBlob = new Blob(fullInterviewChunksRef.current, { type: 'video/webm' })
+
+              if (videoBlob.size > 0) {
+                console.log(`🎥 Video recording ready: ${videoBlob.size} bytes`)
+
+                // Upload video
+                const formData = new FormData()
+                formData.append('video_file', videoBlob, 'interview_recording.webm')
+                formData.append('email', interview?.email || interview?.candidate_email || '')
+
+                try {
+                  updateStatus('Uploading interview recording...', 'connecting')
+                  await axios.post(
+                    `${API_BASE_URL}/candidates/interviews/${interview.interview_id}/async/upload-video`,
+                    formData,
+                    {
+                      headers: {
+                        'Content-Type': 'multipart/form-data'
+                      }
+                    }
+                  )
+                  console.log('✅ Video uploaded successfully')
+                } catch (err) {
+                  console.error('Error uploading video:', err)
+                  // Don't fail the whole process if video upload fails
+                }
+              }
+            }
+          } catch (err) {
+            console.error('Error processing interview recording:', err)
+          }
+
+          // Clean up stream
+          if (fullInterviewStreamRef.current) {
+            fullInterviewStreamRef.current.getTracks().forEach(track => track.stop())
+            fullInterviewStreamRef.current = null
+          }
+          if (videoPreviewRef.current) {
+            videoPreviewRef.current.srcObject = null
+          }
+
+          resolve()
+        }
+
+        fullInterviewRecorderRef.current.stop()
+      } else {
+        // Recorder wasn't active
+        if (fullInterviewStreamRef.current) {
+          fullInterviewStreamRef.current.getTracks().forEach(track => track.stop())
+          fullInterviewStreamRef.current = null
+        }
+        resolve()
+      }
+    })
   }
 
   const initAudioContext = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       mediaStreamRef.current = stream
-      
+
       const audioContext = new (window.AudioContext || window.webkitAudioContext)()
       audioContextRef.current = audioContext
-      
+
       const analyser = audioContext.createAnalyser()
       analyser.fftSize = 512
       analyser.smoothingTimeConstant = 0.5
       analyserRef.current = analyser
-      
+
       const microphone = audioContext.createMediaStreamSource(stream)
       microphone.connect(analyser)
     } catch (error) {
@@ -265,7 +375,7 @@ function InterviewInterface({ interview, onClose }) {
     try {
       // Initialize audio context first
       await initAudioContext()
-      
+
       const ws = new WebSocket(WS_URL)
       wsRef.current = ws
 
@@ -273,7 +383,10 @@ function InterviewInterface({ interview, onClose }) {
         console.log('WebSocket connected')
         setConnected(true)
         updateStatus('Connected', 'connected')
-        
+
+        // Start video recording when interview connects
+        startFullInterviewRecording()
+
         // Send start interview message with selected providers/models
         const startMessage = {
           type: 'start_interview',
@@ -286,7 +399,7 @@ function InterviewInterface({ interview, onClose }) {
           llm_provider: llmProvider,
           llm_model: llmModel
         }
-        
+
         console.log('Sending start interview message:', startMessage)
         ws.send(JSON.stringify(startMessage))
       }
@@ -306,7 +419,7 @@ function InterviewInterface({ interview, onClose }) {
       ws.onclose = (event) => {
         console.log('WebSocket closed', event.code, event.reason)
         setConnected(false)
-        
+
         // Check if it's a normal close (interview completed) or an error
         if (event.code === 1000) {
           // Normal close - interview completed
@@ -330,11 +443,11 @@ function InterviewInterface({ interview, onClose }) {
     if (countdownIntervalRef.current) {
       clearInterval(countdownIntervalRef.current)
     }
-    
+
     const totalSeconds = minutes * 60
     setTimeRemaining(totalSeconds)
     setTimeLimitMinutes(minutes)
-    
+
     // Start countdown interval
     countdownIntervalRef.current = setInterval(() => {
       setTimeRemaining(prev => {
@@ -363,12 +476,12 @@ function InterviewInterface({ interview, onClose }) {
         if (greetingPhase !== currentPhase) {
           setCurrentPhase(greetingPhase)
         }
-        
+
         // Start countdown timer if time limit is provided
         if (data.time_limit_minutes) {
           startCountdown(data.time_limit_minutes)
         }
-        
+
         if (data.interviewer_text) {
           addMessage('interviewer', data.interviewer_text)
         }
@@ -386,12 +499,12 @@ function InterviewInterface({ interview, onClose }) {
           startListening()
         }
         break
-      
+
       case 'response':
         // Prevent duplicate responses - check if this is the same response within debounce window
         const now = Date.now()
         const responseText = data.interviewer_text || ''
-        
+
         // More robust duplicate detection:
         // 1. Already processing another response
         // 2. Same text within debounce window
@@ -403,33 +516,33 @@ function InterviewInterface({ interview, onClose }) {
           (now - lastResponseTimeRef.current < RESPONSE_DEBOUNCE_MS && responseText === lastResponseTextRef.current) ||
           (now - lastResponseTimeRef.current < RESPONSE_DEBOUNCE_MS && textPrefix === lastTextPrefix && textPrefix.length > 20)
         )
-        
+
         if (isDuplicate) {
           console.log('⚠️ Ignoring duplicate response:', responseText.substring(0, 50))
           return
         }
-        
+
         // Mark as processing and update tracking
         processingResponseRef.current = true
         lastResponseTimeRef.current = now
         lastResponseTextRef.current = responseText
-        
+
         // Stop listening immediately to prevent echo/overlap
         if (isListeningRef.current) {
           stopListening()
         }
-        
+
         // Stop any recording in progress
         if (isRecordingRef.current) {
           cancelRecording()
         }
-        
+
         // Update phase only if it actually changed to prevent unnecessary re-renders
         const newPhase = data.phase || ''
         if (newPhase !== currentPhase) {
           setCurrentPhase(newPhase)
         }
-        
+
         if (data.user_text) {
           addMessage('user', data.user_text)
         }
@@ -437,7 +550,7 @@ function InterviewInterface({ interview, onClose }) {
           addMessage('interviewer', data.interviewer_text)
         }
         updateStatus('AI is speaking...', 'connected')
-        
+
         try {
           // Queue the pending listen request
           pendingListenRef.current = true
@@ -454,7 +567,7 @@ function InterviewInterface({ interview, onClose }) {
           startListening()
         }
         break
-      
+
       case 'assessment':
         console.log('📊 Assessment received')
         setAssessment(data.assessment)
@@ -468,13 +581,13 @@ function InterviewInterface({ interview, onClose }) {
         setTimeRemaining(null)
         cleanupResources()
         break
-      
+
       case 'stream_ready':
         console.log('✅ Streaming session ready')
         streamingStartedRef.current = true
         startStreamingChunks()
         break
-      
+
       case 'error':
         console.error('❌ Error from server:', data.message)
         updateStatus(`Error: ${data.message}`, 'error')
@@ -482,7 +595,7 @@ function InterviewInterface({ interview, onClose }) {
         streamingStartedRef.current = false
         setTimeout(() => startListening(), 1000)
         break
-      
+
       default:
         console.log('Unknown message type:', data.type)
     }
@@ -504,37 +617,37 @@ function InterviewInterface({ interview, onClose }) {
       try {
         // Stop any currently playing audio first
         stopCurrentAudio()
-        
+
         // Set flag that audio is playing
         isAudioPlayingRef.current = true
-        
+
         console.log('🔊 Playing audio, format:', format)
-        
+
         const audioData = atob(audioBase64)
         const arrayBuffer = new ArrayBuffer(audioData.length)
         const view = new Uint8Array(arrayBuffer)
         for (let i = 0; i < audioData.length; i++) {
           view[i] = audioData.charCodeAt(i)
         }
-        
+
         const mimeType = format === 'wav' ? 'audio/wav' : 'audio/mpeg'
         const blob = new Blob([arrayBuffer], { type: mimeType })
         const audioUrl = URL.createObjectURL(blob)
         const audio = new Audio(audioUrl)
         currentAudioRef.current = audio
-        
+
         audio.onended = () => {
           console.log('🔊 Audio playback ended')
           URL.revokeObjectURL(audioUrl)
           currentAudioRef.current = null
           isAudioPlayingRef.current = false
-          
+
           // Short delay to ensure audio is completely finished
           setTimeout(() => {
             resolve()
           }, 300)
         }
-        
+
         audio.onerror = (error) => {
           console.error('🔊 Audio playback error:', error)
           URL.revokeObjectURL(audioUrl)
@@ -542,7 +655,7 @@ function InterviewInterface({ interview, onClose }) {
           isAudioPlayingRef.current = false
           resolve()
         }
-        
+
         audio.play()
           .then(() => {
             console.log('🔊 Audio playback started')
@@ -572,23 +685,23 @@ function InterviewInterface({ interview, onClose }) {
       console.log('⏸️ Audio queue already being processed')
       return
     }
-    
+
     isPlayingQueueRef.current = true
-    
+
     while (audioQueueRef.current.length > 0) {
       const item = audioQueueRef.current.shift()
       console.log(`🔊 Processing queued audio (${audioQueueRef.current.length} remaining in queue)`)
-      
+
       // Stop listening while playing audio
       if (isListeningRef.current) {
         stopListening()
       }
-      
+
       await playAudioInternal(item.audio, item.format)
     }
-    
+
     isPlayingQueueRef.current = false
-    
+
     // After all audio played, start listening if not already
     if (pendingListenRef.current) {
       pendingListenRef.current = false
@@ -606,11 +719,11 @@ function InterviewInterface({ interview, onClose }) {
       console.log('🗑️ Clearing audio queue - new audio taking priority')
       audioQueueRef.current = []
     }
-    
+
     // Add to queue
     audioQueueRef.current.push({ audio: audioBase64, format })
     console.log(`📥 Added audio to queue (queue size: ${audioQueueRef.current.length})`)
-    
+
     // Process queue
     await processAudioQueue()
   }
@@ -631,24 +744,24 @@ function InterviewInterface({ interview, onClose }) {
       pendingListenRef.current = true
       return
     }
-    
+
     // Don't start if we're processing a response
     if (processingResponseRef.current) {
       console.log('⏸️ Response processing, queuing listen request')
       pendingListenRef.current = true
       return
     }
-    
+
     if (isListeningRef.current || !analyserRef.current) return
-    
+
     console.log('👂 Started listening for voice...')
     setIsListening(true)
     isListeningRef.current = true
     silenceStartRef.current = null
     speechStartRef.current = null
-    
+
     updateStatus('Listening... Speak when ready', 'listening')
-    
+
     // Start Voice Activity Detection with slightly slower interval to reduce CPU usage
     vadIntervalRef.current = setInterval(checkVoiceActivity, 150)
   }
@@ -666,39 +779,39 @@ function InterviewInterface({ interview, onClose }) {
   const checkVoiceActivity = () => {
     // Use refs instead of state to avoid stale closure in setInterval
     if (!analyserRef.current || !isListeningRef.current) return
-    
+
     // Don't check if audio is playing or processing response
     if (isAudioPlayingRef.current || processingResponseRef.current) return
-    
+
     const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount)
     analyserRef.current.getByteFrequencyData(dataArray)
-    
+
     // Calculate average volume (focus on speech frequencies)
     const relevantData = dataArray.slice(2, 128)
     const average = relevantData.reduce((a, b) => a + b, 0) / relevantData.length
-    
+
     // Calculate peak for click detection
     const peak = Math.max(...relevantData)
-    
+
     const now = Date.now()
-    
+
     // FAILSAFE 1: Maximum recording duration
     if (isRecordingRef.current && recordingStartTimeRef.current) {
       const recordingDuration = now - recordingStartTimeRef.current
-      
+
       if (recordingDuration > MAX_RECORDING_DURATION) {
         console.log('⏱️ Maximum recording duration reached, force stopping...')
         stopRecording()
         return
       }
-      
+
       // FAILSAFE 2: Force stop after FORCE_STOP_AFTER_MS regardless of VAD
       if (recordingDuration > FORCE_STOP_AFTER_MS) {
         console.log('⚠️ Failsafe: Force stopping after', FORCE_STOP_AFTER_MS, 'ms')
         stopRecording()
         return
       }
-      
+
       // FAILSAFE 3: If no strong speech for LOW_ACTIVITY_TIMEOUT_MS, stop
       if (lastStrongSpeechRef.current && (now - lastStrongSpeechRef.current > LOW_ACTIVITY_TIMEOUT_MS)) {
         console.log('⚠️ Failsafe: No strong speech detected for', LOW_ACTIVITY_TIMEOUT_MS, 'ms, stopping')
@@ -706,21 +819,21 @@ function InterviewInterface({ interview, onClose }) {
         return
       }
     }
-    
+
     // Simple speech detection: average volume above threshold
     // Filter out clicks (very high peak with low average)
     const isLikelyClick = peak > 200 && average < 20
     const isLikelySpeech = average > MIN_SPEECH_VOLUME && !isLikelyClick
-    
+
     // Track strong speech (for failsafe)
     if (average > MIN_SPEECH_VOLUME * 1.5) {
       lastStrongSpeechRef.current = now
     }
-    
+
     if (isLikelySpeech) {
       // Voice detected - reset silence timer
       silenceStartRef.current = null
-      
+
       if (!isRecordingRef.current) {
         // Start recording when speech is detected
         speechStartRef.current = now
@@ -735,7 +848,7 @@ function InterviewInterface({ interview, onClose }) {
         } else {
           const silenceDuration = now - silenceStartRef.current
           const speechDuration = now - speechStartRef.current
-          
+
           // Stop if silence lasted long enough
           if (silenceDuration > SILENCE_DURATION) {
             if (speechDuration > SPEECH_MIN_DURATION) {
@@ -756,33 +869,33 @@ function InterviewInterface({ interview, onClose }) {
 
   const startRecording = () => {
     if (isRecordingRef.current || !mediaStreamRef.current) return
-    
+
     try {
       console.log('🔴 Started recording...')
       const mediaRecorder = new MediaRecorder(mediaStreamRef.current, {
         mimeType: 'audio/webm;codecs=opus'
       })
       mediaRecorderRef.current = mediaRecorder
-      
+
       audioChunksRef.current = []
       recordingStartTimeRef.current = Date.now()
       streamingStartedRef.current = false
-      
+
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data)
-          
+
           // In streaming mode, send chunks immediately if stream is ready
           if (isStreamingModeRef.current && streamingStartedRef.current) {
             sendAudioChunk(event.data)
           }
         }
       }
-      
+
       mediaRecorder.onstop = async () => {
         console.log('⏹️ Recording stopped, chunks:', audioChunksRef.current.length)
         recordingStartTimeRef.current = null
-        
+
         if (isStreamingModeRef.current) {
           // In streaming mode, send commit to finalize transcription
           if (streamingStartedRef.current) {
@@ -807,12 +920,12 @@ function InterviewInterface({ interview, onClose }) {
           }
         }
       }
-      
+
       // Start recording with smaller chunks for streaming (100ms)
       mediaRecorder.start(100)
       setIsRecording(true)
       isRecordingRef.current = true
-      
+
       // In streaming mode, request streaming session from server
       if (isStreamingModeRef.current) {
         updateStatus('Starting streaming session...', 'recording')
@@ -841,7 +954,7 @@ function InterviewInterface({ interview, onClose }) {
 
   const sendAudioChunk = (audioBlob) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !streamingStartedRef.current) return
-    
+
     try {
       const reader = new FileReader()
       reader.onloadend = () => {
@@ -860,7 +973,7 @@ function InterviewInterface({ interview, onClose }) {
 
   const sendStreamCommit = () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
-    
+
     console.log('📤 Sending stream commit')
     wsRef.current.send(JSON.stringify({
       type: 'audio_commit',
@@ -871,9 +984,9 @@ function InterviewInterface({ interview, onClose }) {
 
   const stopRecording = () => {
     if (!isRecordingRef.current || !mediaRecorderRef.current) return
-    
+
     stopListening()
-    
+
     if (mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop()
     }
@@ -884,7 +997,7 @@ function InterviewInterface({ interview, onClose }) {
 
   const cancelRecording = () => {
     if (!mediaRecorderRef.current) return
-    
+
     if (mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop()
     }
@@ -902,25 +1015,25 @@ function InterviewInterface({ interview, onClose }) {
       startListening()
       return
     }
-    
+
     // Prevent duplicate audio sends within 500ms (reduced from 1000ms)
     const now = Date.now()
     if (sendingAudioRef.current) {
       console.log('⚠️ Already sending audio, ignoring duplicate')
       return
     }
-    
+
     // Only check time if we've sent audio very recently (within 300ms) - reduced to be less aggressive
     if (now - lastAudioSendTimeRef.current < 300) {
       console.log('⚠️ Audio sent too recently (', now - lastAudioSendTimeRef.current, 'ms ago), ignoring duplicate')
       return
     }
-    
+
     console.log('📤 Starting audio send process...')
-    
+
     sendingAudioRef.current = true
     lastAudioSendTimeRef.current = now
-    
+
     // Safety timeout to reset flag in case something goes wrong
     const timeoutId = setTimeout(() => {
       if (sendingAudioRef.current) {
@@ -928,14 +1041,14 @@ function InterviewInterface({ interview, onClose }) {
         sendingAudioRef.current = false
       }
     }, 10000) // 10 second timeout
-    
+
     try {
       console.log('📤 Sending audio:', (audioBlob.size / 1024).toFixed(2), 'KB')
       const reader = new FileReader()
       reader.onloadstart = () => {
         console.log('📤 FileReader started reading...')
       }
-      
+
       reader.onloadend = () => {
         clearTimeout(timeoutId)
         try {
@@ -952,13 +1065,13 @@ function InterviewInterface({ interview, onClose }) {
             return
           }
           console.log('📤 Audio encoded (', (base64Audio.length / 1024).toFixed(2), 'KB), sending to server...')
-          
+
           if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
             console.error('❌ WebSocket not open, cannot send')
             sendingAudioRef.current = false
             return
           }
-          
+
           wsRef.current.send(JSON.stringify({
             type: 'audio',
             conversation_id: conversationIdRef.current,
@@ -991,21 +1104,24 @@ function InterviewInterface({ interview, onClose }) {
     }
   }
 
-  const endInterview = () => {
+  const endInterview = async () => {
     stopListening()
     stopCurrentAudio()
-    
+
     if (isRecording) {
       cancelRecording()
     }
-    
+
+    // Stop video recording and upload
+    await stopFullInterviewRecording()
+
     // Stop countdown timer
     if (countdownIntervalRef.current) {
       clearInterval(countdownIntervalRef.current)
       countdownIntervalRef.current = null
     }
     setTimeRemaining(null)
-    
+
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && conversationIdRef.current) {
       setIsEndingInterview(true)
       updateStatus('Generating assessment...', 'connecting')
@@ -1013,7 +1129,7 @@ function InterviewInterface({ interview, onClose }) {
         type: 'end_interview',
         conversation_id: conversationIdRef.current
       }))
-      
+
       // Fallback timeout
       setTimeout(() => {
         if (isEndingInterview) {
@@ -1072,7 +1188,7 @@ function InterviewInterface({ interview, onClose }) {
               ))}
             </select>
           </div>
-          
+
           <div className="selector-group">
             <label>TTS Model</label>
             <select
@@ -1098,7 +1214,7 @@ function InterviewInterface({ interview, onClose }) {
               ))}
             </select>
           </div>
-          
+
           <div className="selector-group">
             <label>STT Model</label>
             <select
@@ -1124,7 +1240,7 @@ function InterviewInterface({ interview, onClose }) {
               ))}
             </select>
           </div>
-          
+
           <div className="selector-group">
             <label>LLM Model</label>
             <select
@@ -1138,13 +1254,30 @@ function InterviewInterface({ interview, onClose }) {
             </select>
           </div>
 
-          <button 
+          <button
             className="start-interview-btn"
             onClick={connectWebSocket}
             disabled={!ttsProvider || !ttsModel || !sttProvider || !sttModel || !llmProvider || !llmModel}
           >
             Start Interview
           </button>
+        </div>
+      )}
+
+      {/* Video Preview */}
+      {connected && (
+        <div className="video-preview-container">
+          <video
+            ref={videoPreviewRef}
+            autoPlay
+            playsInline
+            muted
+            className="video-preview"
+          />
+          <div className="video-recording-badge">
+            <div className="rec-dot"></div>
+            <span>REC</span>
+          </div>
         </div>
       )}
 
@@ -1158,7 +1291,7 @@ function InterviewInterface({ interview, onClose }) {
             <p>Waiting for interviewer to start...</p>
           </div>
         )}
-        
+
         {conversation.map((msg, idx) => (
           <div key={idx} className={`message ${msg.sender}`}>
             <div className="message-header">
@@ -1173,7 +1306,7 @@ function InterviewInterface({ interview, onClose }) {
         {assessment && (
           <div className="assessment-section">
             <h3>Interview Assessment</h3>
-            <div 
+            <div
               className="assessment-content"
               dangerouslySetInnerHTML={{
                 __html: (() => {
@@ -1191,7 +1324,7 @@ function InterviewInterface({ interview, onClose }) {
                     .replace(/^\d+\. (.*$)/gim, '<li>$1</li>')
                     // Line breaks
                     .replace(/\n/g, '<br>')
-                  
+
                   // Wrap consecutive <li> tags in <ul>
                   const lines = formatted.split('<br>')
                   formatted = lines.reduce((acc, line, idx, arr) => {
@@ -1208,7 +1341,7 @@ function InterviewInterface({ interview, onClose }) {
                     }
                     return acc
                   }, '').replace(/<br>$/g, '')
-                  
+
                   return formatted
                 })()
               }}
@@ -1224,7 +1357,7 @@ function InterviewInterface({ interview, onClose }) {
             <span>Listening...</span>
           </div>
         )}
-        
+
         {!assessment && (
           <>
             {isRecording && (
@@ -1233,8 +1366,8 @@ function InterviewInterface({ interview, onClose }) {
                 <span>Recording...</span>
               </div>
             )}
-            
-            <button 
+
+            <button
               className="end-btn"
               onClick={endInterview}
               disabled={!connected || isEndingInterview}
@@ -1244,7 +1377,7 @@ function InterviewInterface({ interview, onClose }) {
             </button>
           </>
         )}
-        
+
         {assessment && (
           <button className="close-btn-large" onClick={onClose}>
             Close
