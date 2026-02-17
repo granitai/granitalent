@@ -1,92 +1,188 @@
-# AI Interview Application - Deployment Guide
+# Guide de Déploiement Docker
 
-This guide explains how to deploy the AI Interview application using Docker.
+Ce guide explique comment déployer l'application AI Interview sur un serveur distant avec Docker.
 
-## 📋 Prerequisites
+## 📋 Prérequis
 
-- **Docker** and **Docker Compose** installed on your machine or server.
-- An API Key for:
-  - **OpenAI** or **Gemini** (LLM)
-  - **ElevenLabs** or **Cartesia** (Text-to-Speech)
-  - **Replay.ai** (optional, for analytics)
+- Docker et Docker Compose installés sur le serveur
+- Fichier `.env` configuré dans `backend/` avec toutes les clés API
 
-## 🚀 Quick Start (Local)
+## 🚀 Déploiement
 
-1. **Configure Environment Variables**
-   Create a `.env` file in the `backend/` directory:
-   ```bash
-   cp backend/.env.example backend/.env
-   # Edit backend/.env with your actual API keys
-   ```
+### 1. Préparer le serveur
 
-2. **Build and Run**
-   Open a terminal in the project root and run:
-   ```bash
-   docker-compose up --build
-   ```
-
-3. **Access the Application**
-   - **Frontend**: http://localhost
-   - **Backend API**: http://localhost/api
-   - **API Docs**: http://localhost/docs
-
-## 🌍 Deploying to a Linux Server
-
-### 1. Prepare the Server
 ```bash
-# Update and install Docker
+# Installer Docker et Docker Compose
 sudo apt update
 sudo apt install -y docker.io docker-compose
 sudo systemctl start docker
 sudo systemctl enable docker
+
+# Vérifier l'installation
+docker --version
+docker-compose --version
 ```
 
-### 2. Transfer Files
-Clone your repository or copy the files to the server (e.g., to `/opt/ai-interview`).
+### 2. Transférer le projet sur le serveur
 
-### 3. Configure Configuration
-Navigate to the `backend` directory and create your `.env` file:
+**Option A : Via Git**
+```bash
+git clone <votre-repo> /opt/ai-interview
+cd /opt/ai-interview
+```
+
+**Option B : Via SCP (depuis votre machine locale)**
+```bash
+scp -r ./AI_Interview user@server:/opt/
+ssh user@server
+cd /opt/AI_Interview
+```
+
+### 3. Configurer les variables d'environnement
+
 ```bash
 cd backend
 nano .env
 ```
-Paste your API keys and configuration.
 
-### 4. Start the Application
-Return to the root directory and start the services:
+Assurez-vous que le fichier `.env` contient :
+```env
+ELEVENLABS_API_KEY=votre_clé_elevenlabs
+GOOGLE_API_KEY=votre_clé_google
+CARTESIA_API_KEY=votre_clé_cartesia
+OPENAI_API_KEY=votre_clé_openai
+JWT_SECRET_KEY=une_clé_secrète_très_longue_et_aléatoire
+VOICE_ID=cjVigY5qzO86Huf0OWal
+CARTESIA_VOICE_ID=79a125e8-cd45-4c13-8a67-188112f4dd22
+```
+
+### 4. Construire et démarrer les conteneurs
+
 ```bash
+# Revenir à la racine du projet
 cd /opt/ai-interview
-docker-compose up -d --build
-```
 
-### 5. Verify Deployment
-Check the status of your containers:
-```bash
+# Construire les images Docker
+docker-compose build
+
+# Démarrer les services
+docker-compose up -d
+
+# Vérifier que tout fonctionne
 docker-compose ps
-```
-View logs if needed:
-```bash
 docker-compose logs -f
 ```
 
-## 📂 Data Persistence
+### 5. Configurer le firewall
 
-The application is configured to persist important data even if containers are restarted:
-- **Database**: Stored in `./backend/database.db`
-- **Video Recordings**: Stored in `./backend/uploads/`
+```bash
+# Autoriser le port 80 (frontend)
+sudo ufw allow 80/tcp
 
-**Note:** Ensure your server has enough disk space for video recordings.
+# Optionnel : autoriser le port 8000 (backend direct)
+sudo ufw allow 8000/tcp
 
-## 🔧 Troubleshooting
+# Vérifier le statut
+sudo ufw status
+```
 
-**Frontend not loading?**
-- Ensure port 80 is not blocked by a firewall (`sudo ufw allow 80`).
-- Check frontend logs: `docker-compose logs frontend`
+### 6. Accéder à l'application
 
-**API errors?**
-- Check backend logs: `docker-compose logs backend`
-- Verify your API keys in `backend/.env` are correct.
+- **Frontend** : `http://IP_DU_SERVEUR`
+- **API Backend** : `http://IP_DU_SERVEUR/api`
+- **Documentation API** : `http://IP_DU_SERVEUR/docs`
 
-**Video uploads failing?**
-- Ensure the `./backend/uploads` directory exists and is writable.
-- Docker should handle this automatically, but you can try: `mkdir -p backend/uploads && chmod 777 backend/uploads`
+Pour trouver l'IP du serveur :
+```bash
+# IP publique
+curl ifconfig.me
+
+# Ou IP locale
+hostname -I
+```
+
+## 🔧 Commandes utiles
+
+### Voir les logs
+```bash
+# Tous les services
+docker-compose logs -f
+
+# Backend uniquement
+docker-compose logs -f backend
+
+# Frontend uniquement
+docker-compose logs -f frontend
+```
+
+### Redémarrer les services
+```bash
+docker-compose restart
+```
+
+### Arrêter les services
+```bash
+docker-compose down
+```
+
+### Reconstruire après modifications
+```bash
+docker-compose up -d --build
+```
+
+### Accéder au shell du backend
+```bash
+docker-compose exec backend bash
+```
+
+### Vérifier l'état des conteneurs
+```bash
+docker-compose ps
+```
+
+## 🐛 Dépannage
+
+### Les conteneurs ne démarrent pas
+```bash
+# Vérifier les logs
+docker-compose logs
+
+# Vérifier que le fichier .env existe
+ls -la backend/.env
+```
+
+### Erreur de connexion à la base de données
+- Vérifier que le volume `database.db` est bien monté
+- Les permissions peuvent être un problème : `sudo chmod 666 backend/database.db`
+
+### Le frontend ne charge pas
+- Vérifier que le port 80 est ouvert : `sudo ufw status`
+- Vérifier les logs Nginx : `docker-compose logs frontend`
+
+### L'API ne répond pas
+- Vérifier que le backend est démarré : `docker-compose ps`
+- Vérifier les logs : `docker-compose logs backend`
+- Tester directement : `curl http://localhost:8000/docs`
+
+## 📝 Notes importantes
+
+- **Développement local** : Vous pouvez toujours utiliser `npm run dev` sur votre machine locale pour le développement. Les modifications sont compatibles avec les deux environnements.
+- **Base de données** : La base de données SQLite est persistée dans `backend/database.db` via un volume Docker.
+- **Variables d'environnement** : Ne jamais commiter le fichier `.env` dans Git.
+- **CORS** : En production, vous pouvez restreindre les origines autorisées dans `backend/main.py` ligne 96.
+
+## 🔄 Mise à jour
+
+Pour mettre à jour l'application après des modifications :
+
+```bash
+# Arrêter les services
+docker-compose down
+
+# Récupérer les dernières modifications (si Git)
+git pull
+
+# Reconstruire et redémarrer
+docker-compose up -d --build
+```
+

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { HiArrowPath, HiEye, HiXMark, HiChatBubbleLeftRight, HiDocumentText, HiUser, HiCpuChip, HiSpeakerWave, HiArchiveBox, HiArchiveBoxXMark, HiTrash } from 'react-icons/hi2'
+import { HiArrowPath, HiEye, HiXMark, HiChatBubbleLeftRight, HiDocumentText, HiUser, HiCpuChip, HiSpeakerWave, HiArchiveBox, HiArchiveBoxXMark } from 'react-icons/hi2'
 import { useAuth } from '../../contexts/AuthContext'
 import './InterviewsView.css'
 
@@ -91,19 +91,6 @@ function InterviewsView({ viewMode = 'card' }) {
     } catch (error) {
       console.error(`Error ${isArchived ? 'unarchiving' : 'archiving'} interview:`, error)
       alert(`Failed to ${isArchived ? 'restore' : 'archive'} interview`)
-    }
-  }
-
-  const handleDeleteInterview = async (interviewId) => {
-    if (!window.confirm('Are you sure you want to permanently delete this interview? This action cannot be undone.')) {
-      return
-    }
-    try {
-      await authApi.delete(`/admin/interviews/${interviewId}`)
-      setInterviews(prev => prev.filter(interview => interview.interview_id !== interviewId))
-    } catch (error) {
-      console.error('Error deleting interview:', error)
-      alert('Failed to delete interview')
     }
   }
 
@@ -431,13 +418,6 @@ function InterviewsView({ viewMode = 'card' }) {
                     >
                       {interview.is_archived ? <HiArchiveBoxXMark className="icon" /> : <HiArchiveBox className="icon" />}
                     </button>
-                    <button
-                      className="delete-btn icon-only"
-                      onClick={() => handleDeleteInterview(interview.interview_id)}
-                      title="Delete permanently"
-                    >
-                      <HiTrash className="icon" />
-                    </button>
                   </div>
                 </>
               ) : (
@@ -476,13 +456,6 @@ function InterviewsView({ viewMode = 'card' }) {
                       title={interview.is_archived ? 'Restore Interview' : 'Archive Interview'}
                     >
                       {interview.is_archived ? <HiArchiveBoxXMark className="icon" /> : <HiArchiveBox className="icon" />}
-                    </button>
-                    <button
-                      className="delete-btn"
-                      onClick={() => handleDeleteInterview(interview.interview_id)}
-                      title="Delete permanently"
-                    >
-                      <HiTrash className="icon" />
                     </button>
                   </div>
                 </>
@@ -646,7 +619,6 @@ function InterviewsView({ viewMode = 'card' }) {
                         {selectedInterview.audio_segments.map((segment, index) => {
                           const isQuestion = segment.type === 'question'
                           const audioUrl = segment.audioUrl || (() => {
-                            if (!segment.audio) return null
                             try {
                               const audioData = atob(segment.audio)
                               const audioBytes = new Uint8Array(audioData.length)

@@ -75,7 +75,6 @@ function InterviewInterface({ interview, onClose }) {
   const audioQueueRef = useRef([])  // Queue for audio playback to prevent overlaps
   const isPlayingQueueRef = useRef(false)  // Whether we're currently playing from queue
   const lastStrongSpeechRef = useRef(null)  // Track last strong speech for failsafe
-  const interviewEndedRef = useRef(false)  // Flag to prevent any further voice activity after AI concludes
 
   // Video recording refs
   const fullInterviewRecorderRef = useRef(null)
@@ -571,12 +570,6 @@ function InterviewInterface({ interview, onClose }) {
 
       case 'assessment':
         console.log('📊 Assessment received')
-        // Immediately mark interview as ended to prevent further voice activity
-        interviewEndedRef.current = true
-        stopListening()
-        if (isRecordingRef.current) {
-          cancelRecording()
-        }
         setAssessment(data.assessment)
         updateStatus('Interview completed - Assessment generated', 'connected')
         setIsEndingInterview(false)
@@ -586,21 +579,7 @@ function InterviewInterface({ interview, onClose }) {
           countdownIntervalRef.current = null
         }
         setTimeRemaining(null)
-        // Stop video recording and upload BEFORE cleaning up resources
-        await stopFullInterviewRecording()
         cleanupResources()
-        break
-
-      case 'interview_ending':
-        // AI has decided to end the interview - stop listening immediately
-        // The assessment will follow shortly
-        console.log('🔚 Interview ending signal received - stopping all input')
-        interviewEndedRef.current = true
-        stopListening()
-        if (isRecordingRef.current) {
-          cancelRecording()
-        }
-        updateStatus('Interview ending - generating assessment...', 'connecting')
         break
 
       case 'stream_ready':
@@ -723,16 +702,12 @@ function InterviewInterface({ interview, onClose }) {
 
     isPlayingQueueRef.current = false
 
-    // After all audio played, start listening if not already (but not if interview has ended)
-    if (pendingListenRef.current && !interviewEndedRef.current) {
+    // After all audio played, start listening if not already
+    if (pendingListenRef.current) {
       pendingListenRef.current = false
       setTimeout(() => {
-        if (!interviewEndedRef.current) {
-          startListening()
-        }
+        startListening()
       }, 500) // Extra delay after all audio finished
-    } else {
-      pendingListenRef.current = false
     }
   }
 
@@ -763,12 +738,6 @@ function InterviewInterface({ interview, onClose }) {
   }
 
   const startListening = () => {
-    // Don't start listening if interview has ended
-    if (interviewEndedRef.current) {
-      console.log('🛑 Interview ended, not starting listener')
-      return
-    }
-
     // Don't start listening if audio is still playing
     if (isAudioPlayingRef.current) {
       console.log('⏸️ Audio still playing, queuing listen request')
@@ -810,9 +779,6 @@ function InterviewInterface({ interview, onClose }) {
   const checkVoiceActivity = () => {
     // Use refs instead of state to avoid stale closure in setInterval
     if (!analyserRef.current || !isListeningRef.current) return
-
-    // Don't check if interview has ended
-    if (interviewEndedRef.current) return
 
     // Don't check if audio is playing or processing response
     if (isAudioPlayingRef.current || processingResponseRef.current) return

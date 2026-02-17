@@ -193,7 +193,7 @@ function ApplicationDetailModal({ application, onClose }) {
                 </div>
               </div>
 
-              {application.ai_reasoning && (
+              {application.ai_reasoning && !application.language_check && !application.job_fit_check && (
                 <div className="reasoning-box">
                   <strong>AI Reasoning:</strong>
                   <p>{application.ai_reasoning}</p>
