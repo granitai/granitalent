@@ -98,6 +98,26 @@ function ApplicationDetailModal({ application, onClose }) {
                 Job Application
               </h3>
               <p><strong>Position:</strong> {application.job_offer.title}</p>
+              {application.job_offer.required_languages && (
+                <div className="required-languages-section">
+                  <strong>Required Languages:</strong>
+                  <div className="required-languages">
+                    {(() => {
+                      try {
+                        const langs = JSON.parse(application.job_offer.required_languages)
+                        return Array.isArray(langs) ? langs.map(lang => (
+                          <span key={lang} className="lang-badge">
+                            <HiGlobeAlt style={{ fontSize: '0.9rem' }} />
+                            {lang}
+                          </span>
+                        )) : null
+                      } catch {
+                        return <span className="lang-badge">{application.job_offer.required_languages}</span>
+                      }
+                    })()}
+                  </div>
+                </div>
+              )}
               <p><strong>Submitted:</strong> {new Date(application.submitted_at).toLocaleString()}</p>
               {application.cover_letter && (
                 <div>
@@ -113,20 +133,72 @@ function ApplicationDetailModal({ application, onClose }) {
                 AI Evaluation
               </h3>
               <div className="status-row">
-                <span>Status: {getStatusBadge(application.ai_status, 'ai')}</span>
+                <span>Overall Status: {getStatusBadge(application.ai_status, 'ai')}</span>
                 <span>Score: {application.ai_score}/10</span>
               </div>
-              {application.ai_reasoning && (
+
+              {/* Dual Evaluation Display */}
+              <div className="dual-evaluation">
+                {/* Language Check Section */}
+                <div className="evaluation-card language-check">
+                  <h4>🌐 Language Check</h4>
+                  {application.language_check ? (
+                    <>
+                      <div className={`check-result ${application.language_check.passed ? 'passed' : 'failed'}`}>
+                        {application.language_check.passed ? '✅ Passed' : '❌ Failed'}
+                      </div>
+                      {application.language_check.languages_required && application.language_check.languages_required.length > 0 && (
+                        <div className="language-details">
+                          <p><strong>Required:</strong> {application.language_check.languages_required.join(', ')}</p>
+                          {application.language_check.languages_found && application.language_check.languages_found.length > 0 && (
+                            <p><strong>Found:</strong> {application.language_check.languages_found.join(', ')}</p>
+                          )}
+                          {application.language_check.languages_missing && application.language_check.languages_missing.length > 0 && (
+                            <p className="missing"><strong>Missing:</strong> {application.language_check.languages_missing.join(', ')}</p>
+                          )}
+                        </div>
+                      )}
+                      <p className="reasoning">{application.language_check.reasoning}</p>
+                    </>
+                  ) : (
+                    <p className="no-data">Language evaluation not available</p>
+                  )}
+                </div>
+
+                {/* Job Fit Check Section */}
+                <div className="evaluation-card job-fit-check">
+                  <h4>💼 Job Fit Check</h4>
+                  {application.job_fit_check ? (
+                    <>
+                      <div className={`check-result ${application.job_fit_check.status === 'approved' ? 'passed' : 'failed'}`}>
+                        {application.job_fit_check.status === 'approved' ? '✅ Approved' : '❌ Rejected'}
+                      </div>
+                      <div className="score-breakdown">
+                        <div><HiAcademicCap className="score-icon" /> Skills: {application.job_fit_check.skills_match || application.ai_skills_match}/10</div>
+                        <div><HiClipboardDocumentCheck className="score-icon" /> Experience: {application.job_fit_check.experience_match || application.ai_experience_match}/10</div>
+                        <div><HiDocumentText className="score-icon" /> Education: {application.job_fit_check.education_match || application.ai_education_match}/10</div>
+                      </div>
+                      <p className="reasoning">{application.job_fit_check.reasoning}</p>
+                    </>
+                  ) : (
+                    <>
+                      {/* Fallback to legacy fields if job_fit_check not available */}
+                      <div className="score-breakdown">
+                        <div><HiAcademicCap className="score-icon" /> Skills Match: {application.ai_skills_match}/10</div>
+                        <div><HiClipboardDocumentCheck className="score-icon" /> Experience Match: {application.ai_experience_match}/10</div>
+                        <div><HiDocumentText className="score-icon" /> Education Match: {application.ai_education_match}/10</div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {application.ai_reasoning && !application.language_check && !application.job_fit_check && (
                 <div className="reasoning-box">
                   <strong>AI Reasoning:</strong>
                   <p>{application.ai_reasoning}</p>
                 </div>
               )}
-              <div className="score-breakdown">
-                <div><HiAcademicCap className="score-icon" /> Skills Match: {application.ai_skills_match}/10</div>
-                <div><HiClipboardDocumentCheck className="score-icon" /> Experience Match: {application.ai_experience_match}/10</div>
-                <div><HiDocumentText className="score-icon" /> Education Match: {application.ai_education_match}/10</div>
-              </div>
             </div>
 
             <div className="detail-section">
@@ -145,19 +217,58 @@ function ApplicationDetailModal({ application, onClose }) {
               )}
             </div>
 
-            {application.interview_assessment && (
+            {application.interviews && application.interviews.length > 0 && (
               <div className="detail-section">
                 <h3>
                   <HiMicrophone className="section-icon" />
-                  Interview Assessment
+                  Interview Attempts ({application.interviews.length})
                 </h3>
-                {application.interview_recommendation && (
-                  <div className="status-row">
-                    Recommendation: {getStatusBadge(application.interview_recommendation, 'interview')}
-                  </div>
-                )}
-                <div className="assessment-box">
-                  <pre>{application.interview_assessment}</pre>
+                <div className="interviews-list">
+                  {application.interviews.map((interview, index) => (
+                    <div key={interview.interview_id} className="interview-attempt">
+                      <div className="interview-attempt-header">
+                        <h4>Attempt #{index + 1}</h4>
+                        <div className="interview-badges">
+                          {getStatusBadge(interview.status, 'interview')}
+                          {interview.recommendation && getStatusBadge(interview.recommendation, 'interview')}
+                        </div>
+                      </div>
+                      <div className="interview-attempt-info">
+                        <p><strong>Created:</strong> {new Date(interview.created_at).toLocaleString()}</p>
+                        {interview.completed_at && (
+                          <p><strong>Completed:</strong> {new Date(interview.completed_at).toLocaleString()}</p>
+                        )}
+                        {interview.has_recording && (
+                          <p><strong>Recording:</strong> Available</p>
+                        )}
+                      </div>
+                      {interview.assessment && (
+                        <div className="interview-assessment">
+                          <strong>Assessment:</strong>
+                          <div className="assessment-box">
+                            <pre>{interview.assessment}</pre>
+                          </div>
+                        </div>
+                      )}
+                      <div className="interview-actions">
+                        <button
+                          className="btn-view-interview"
+                          onClick={async () => {
+                            try {
+                              const response = await authApi.get(`/admin/interviews/${interview.interview_id}`)
+                              // Open interview details in a new modal or navigate
+                              alert(`Interview ID: ${interview.interview_id}\nStatus: ${interview.status}\nView full details in Interviews section.`)
+                            } catch (error) {
+                              console.error('Error loading interview details:', error)
+                              alert('Error loading interview details')
+                            }
+                          }}
+                        >
+                          View Full Details
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -182,12 +293,14 @@ function ApplicationDetailModal({ application, onClose }) {
                 <span>Override AI Decision</span>
               </button>
             )}
-            {application.hr_status !== 'interview_sent' && (
-              <button className="btn-interview" onClick={() => setShowInterviewModal(true)}>
-                <HiMicrophone className="icon" />
-                <span>Send Interview Invitation</span>
-              </button>
-            )}
+            <button className="btn-interview" onClick={() => setShowInterviewModal(true)}>
+              <HiMicrophone className="icon" />
+              <span>
+                {application.interviews && application.interviews.length > 0
+                  ? 'Create New Interview'
+                  : 'Send Interview Invitation'}
+              </span>
+            </button>
             <button className="btn-select" onClick={handleSelect} disabled={loading}>
               <HiCheckCircle className="icon" />
               <span>Select Candidate</span>

@@ -14,7 +14,7 @@
   gap: 2rem;
 }
 
-.admin-header > div:first-child {
+.admin-header>div:first-child {
   flex: 1;
 }
 
@@ -181,11 +181,11 @@
     flex-direction: column;
     text-align: center;
   }
-  
+
   .admin-tabs {
     flex-direction: column;
   }
-  
+
   .admin-tab {
     width: 100%;
     justify-content: center;

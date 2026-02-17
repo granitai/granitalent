@@ -1,6 +1,6 @@
 import React from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
-import { HiSparkles, HiBriefcase, HiCog6Tooth, HiArrowRightOnRectangle, HiDocumentText } from 'react-icons/hi2'
+import { HiSparkles, HiBriefcase, HiCog6Tooth, HiArrowRightOnRectangle, HiDocumentText, HiMicrophone, HiRectangleStack } from 'react-icons/hi2'
 import { useAuth } from '../contexts/AuthContext'
 import './Layout.css'
 
@@ -23,24 +23,24 @@ function Layout() {
             <span className="logo-text">AI Interview</span>
           </Link>
           <div className="nav-links">
-            <Link 
-              to="/candidates" 
+            <Link
+              to="/candidates"
               className={location.pathname === '/candidates' ? 'active' : ''}
             >
               <HiBriefcase className="nav-icon" />
               <span>Job Offers</span>
             </Link>
-            <Link 
-              to="/dashboard" 
-              className={location.pathname === '/dashboard' ? 'active' : ''}
+            <Link
+              to="/my-applications"
+              className={location.pathname === '/my-applications' ? 'active' : ''}
             >
-              <HiDocumentText className="nav-icon" />
-              <span>My Applications</span>
+              <HiRectangleStack className="nav-icon" />
+              <span>All my applications</span>
             </Link>
             {isAuthenticated && (
               <>
-                <Link 
-                  to="/admin" 
+                <Link
+                  to="/admin"
                   className={location.pathname === '/admin' ? 'active' : ''}
                 >
                   <HiCog6Tooth className="nav-icon" />
@@ -48,7 +48,7 @@ function Layout() {
                 </Link>
                 <div className="nav-user">
                   <span className="nav-username">{admin?.username}</span>
-                  <button 
+                  <button
                     onClick={handleLogout}
                     className="logout-button"
                     title="Logout"
@@ -60,8 +60,8 @@ function Layout() {
               </>
             )}
             {!isAuthenticated && (
-              <Link 
-                to="/login" 
+              <Link
+                to="/login"
                 className={location.pathname === '/login' ? 'active' : ''}
               >
                 <HiCog6Tooth className="nav-icon" />

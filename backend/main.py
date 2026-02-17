@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Depends, Query
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -37,7 +38,7 @@ from backend.models.job_offer import (
     update_job_offer, delete_job_offer
 )
 from backend.services.cv_parser import parse_pdf, validate_pdf
-from backend.services.cv_evaluator import evaluate_cv_fit
+from backend.services.language_evaluator import evaluate_cv_fit
 from backend.database import init_db, get_db
 from backend.models.db_models import (
     JobOffer as DBJobOffer,
@@ -64,14 +65,14 @@ from backend.services.elevenlabs_stt import speech_to_text as elevenlabs_stt
 from backend.services.elevenlabs_stt_streaming import ElevenLabsSTTStreaming
 from backend.services.cartesia_tts import text_to_speech as cartesia_tts
 from backend.services.cartesia_stt import speech_to_text as cartesia_stt
-from backend.services.gemini_llm import (
+from backend.services.language_llm_gemini import (
     generate_response as gemini_generate_response,
     generate_opening_greeting as gemini_generate_opening_greeting,
     generate_assessment as gemini_generate_assessment,
     generate_audio_check_message as gemini_generate_audio_check,
     generate_name_request_message as gemini_generate_name_request
 )
-from backend.services.gpt_llm import (
+from backend.services.language_llm_gpt import (
     generate_response as gpt_generate_response,
     generate_opening_greeting as gpt_generate_opening_greeting,
     generate_assessment as gpt_generate_assessment,
@@ -102,6 +103,12 @@ app.add_middleware(
 
 # Store active conversations (in production, use Redis or database)
 active_conversations: dict = {}
+
+# Ensure uploads directory exists
+os.makedirs("uploads/videos", exist_ok=True)
+
+# Mount uploads directory for static file serving
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 # Store session configurations
 session_configs: dict = {}
 # Store active streaming STT sessions
@@ -667,12 +674,13 @@ async def upload_cv(
             offer_id=db_job_offer.offer_id
         )
         
-        # Evaluate CV
+        # Evaluate CV - Language evaluator checks if CV has required languages
         evaluation_result = evaluate_cv_fit(
             cv_text=cv_text,
             job_offer_description=job_offer.get_full_description(),
             llm_provider=llm_provider or DEFAULT_LLM_PROVIDER,
-            llm_model=llm_model
+            llm_model=llm_model,
+            required_languages=db_job_offer.required_languages
         )
         
         # Store evaluation (including parsed CV text for debugging)
@@ -804,13 +812,14 @@ async def submit_application(
                     cover_letter_text = ""  # If parsing fails, leave empty
             # For DOC/DOCX, we'll just store the filename (text extraction would require additional libraries)
         
-        # Automatically evaluate CV
+        # Automatically evaluate CV - Language evaluator checks if CV has required languages
         application_id = f"app_{uuid.uuid4().hex[:12]}"
         logger.info(f"📋 Evaluating CV for application: {application_id}")
         evaluation_result = evaluate_cv_fit(
             cv_text=cv_text,
             job_offer_description=job_offer.get_full_description(),
-            llm_provider=DEFAULT_LLM_PROVIDER
+            llm_provider=DEFAULT_LLM_PROVIDER,
+            required_languages=db_job_offer.required_languages
         )
         
         # Get or create candidate
@@ -931,6 +940,9 @@ class JobOfferCreate(BaseModel):
     required_languages: str = ""  # JSON array string, e.g., '["English", "French"]'
     interview_start_language: str = ""
     interview_duration_minutes: int = 20  # Interview duration in minutes (default 20)
+    custom_questions: str = ""  # JSON array of custom questions, e.g., '["What is your experience with X?"]'
+    evaluation_weights: str = ""  # JSON object with weights, e.g., '{"technical_skills": 5, "language_proficiency": 10}'
+    interview_mode: str = "realtime"  # "realtime" or "asynchronous"
 
 
 class JobOfferUpdate(BaseModel):
@@ -942,6 +954,9 @@ class JobOfferUpdate(BaseModel):
     required_languages: Optional[str] = None
     interview_start_language: Optional[str] = None
     interview_duration_minutes: Optional[int] = None
+    custom_questions: Optional[str] = None
+    evaluation_weights: Optional[str] = None
+    interview_mode: Optional[str] = None
 
 
 @app.post("/api/admin/job-offers")
@@ -958,7 +973,10 @@ async def create_job_offer_endpoint(offer: JobOfferCreate, db: Session = Depends
         education_requirements=offer.education_requirements or "",
         required_languages=offer.required_languages or "",
         interview_start_language=offer.interview_start_language or "",
-        interview_duration_minutes=offer.interview_duration_minutes or 20
+        interview_duration_minutes=offer.interview_duration_minutes or 20,
+        custom_questions=offer.custom_questions or "",
+        evaluation_weights=offer.evaluation_weights or "",
+        interview_mode=offer.interview_mode or "realtime"
     )
     db.add(db_job_offer)
     db.commit()
@@ -976,6 +994,9 @@ async def create_job_offer_endpoint(offer: JobOfferCreate, db: Session = Depends
         "required_languages": db_job_offer.required_languages,
         "interview_start_language": db_job_offer.interview_start_language,
         "interview_duration_minutes": db_job_offer.interview_duration_minutes,
+        "custom_questions": db_job_offer.custom_questions,
+        "evaluation_weights": db_job_offer.evaluation_weights,
+        "interview_mode": db_job_offer.interview_mode,
         "created_at": db_job_offer.created_at.isoformat() if db_job_offer.created_at else None,
         "updated_at": db_job_offer.updated_at.isoformat() if db_job_offer.updated_at else None
     }
@@ -1000,6 +1021,9 @@ async def list_job_offers(db: Session = Depends(get_db), current_admin: DBAdmin 
             "required_languages": offer.required_languages,
             "interview_start_language": offer.interview_start_language,
             "interview_duration_minutes": offer.interview_duration_minutes,
+            "custom_questions": offer.custom_questions or "",
+            "evaluation_weights": offer.evaluation_weights or "",
+            "interview_mode": offer.interview_mode or "realtime",
             "created_at": offer.created_at.isoformat() if offer.created_at else None,
             "updated_at": offer.updated_at.isoformat() if offer.updated_at else None
         }
@@ -1027,6 +1051,9 @@ async def get_job_offer_endpoint(offer_id: str, db: Session = Depends(get_db), c
         "required_languages": offer.required_languages,
         "interview_start_language": offer.interview_start_language,
         "interview_duration_minutes": offer.interview_duration_minutes,
+        "custom_questions": offer.custom_questions or "",
+        "evaluation_weights": offer.evaluation_weights or "",
+        "interview_mode": offer.interview_mode or "realtime",
         "created_at": offer.created_at.isoformat() if offer.created_at else None,
         "updated_at": offer.updated_at.isoformat() if offer.updated_at else None
     }
@@ -1059,6 +1086,12 @@ async def update_job_offer_endpoint(offer_id: str, offer_update: JobOfferUpdate,
         offer.interview_start_language = update_data["interview_start_language"]
     if "interview_duration_minutes" in update_data:
         offer.interview_duration_minutes = update_data["interview_duration_minutes"]
+    if "custom_questions" in update_data:
+        offer.custom_questions = update_data["custom_questions"]
+    if "evaluation_weights" in update_data:
+        offer.evaluation_weights = update_data["evaluation_weights"]
+    if "interview_mode" in update_data:
+        offer.interview_mode = update_data["interview_mode"]
     
     offer.updated_at = datetime.now()
     db.commit()
@@ -1076,6 +1109,9 @@ async def update_job_offer_endpoint(offer_id: str, offer_update: JobOfferUpdate,
         "required_languages": offer.required_languages,
         "interview_start_language": offer.interview_start_language,
         "interview_duration_minutes": offer.interview_duration_minutes,
+        "custom_questions": offer.custom_questions or "",
+        "evaluation_weights": offer.evaluation_weights or "",
+        "interview_mode": offer.interview_mode or "realtime",
         "created_at": offer.created_at.isoformat() if offer.created_at else None,
         "updated_at": offer.updated_at.isoformat() if offer.updated_at else None
     }
@@ -1131,6 +1167,9 @@ async def list_applications(
     ai_status: Optional[str] = Query(None),
     hr_status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None, description="Filter applications submitted on or after this date (ISO format)"),
+    date_to: Optional[str] = Query(None, description="Filter applications submitted on or before this date (ISO format)"),
+    show_archived: Optional[bool] = Query(False, description="Include archived applications (default: False - show only active)"),
     db: Session = Depends(get_db),
     current_admin: DBAdmin = Depends(get_current_admin)
 ):
@@ -1142,11 +1181,18 @@ async def list_applications(
     - ai_status: Filter by AI status (approved, rejected, pending)
     - hr_status: Filter by HR status (pending, selected, rejected, interview_sent)
     - search: Search by candidate name or email
+    - date_from: Filter applications submitted on or after this date (ISO format, e.g., 2024-01-15)
+    - date_to: Filter applications submitted on or before this date (ISO format, e.g., 2024-01-31)
+    - show_archived: If true, show archived applications; if false (default), show only active
     """
     if db is None:
         db = next(get_db())
     
     query = db.query(DBApplication)
+    
+    # Filter by archive status (by default, show only non-archived)
+    if not show_archived:
+        query = query.filter(or_(DBApplication.is_archived == False, DBApplication.is_archived == None))
     
     # Apply filters
     if job_offer_id:
@@ -1161,6 +1207,30 @@ async def list_applications(
             DBCandidate.email.ilike(f"%{search}%")
         )
         query = query.join(DBCandidate).filter(search_filter)
+    
+    # Apply date filters
+    if date_from:
+        try:
+            # Handle both date-only and datetime formats
+            if 'T' in date_from:
+                date_from_parsed = datetime.fromisoformat(date_from.replace('Z', '+00:00'))
+            else:
+                date_from_parsed = datetime.fromisoformat(date_from)
+            query = query.filter(DBApplication.submitted_at >= date_from_parsed)
+        except ValueError as e:
+            logger.warning(f"Invalid date_from format: {date_from}, error: {e}")
+    
+    if date_to:
+        try:
+            # Handle both date-only and datetime formats
+            if 'T' in date_to:
+                date_to_parsed = datetime.fromisoformat(date_to.replace('Z', '+00:00'))
+            else:
+                # Add time to end of day for date-only format
+                date_to_parsed = datetime.fromisoformat(date_to + "T23:59:59")
+            query = query.filter(DBApplication.submitted_at <= date_to_parsed)
+        except ValueError as e:
+            logger.warning(f"Invalid date_to format: {date_to}, error: {e}")
     
     applications = query.order_by(DBApplication.submitted_at.desc()).all()
     
@@ -1193,7 +1263,9 @@ async def list_applications(
             "interview_invited_at": app.interview_invited_at.isoformat() if app.interview_invited_at else None,
             "interview_completed_at": app.interview_completed_at.isoformat() if app.interview_completed_at else None,
             "interview_recommendation": app.interview_recommendation,
-            "submitted_at": app.submitted_at.isoformat() if app.submitted_at else None
+            "submitted_at": app.submitted_at.isoformat() if app.submitted_at else None,
+            "is_archived": app.is_archived or False,
+            "archived_at": app.archived_at.isoformat() if app.archived_at else None
         })
     
     return result
@@ -1251,6 +1323,9 @@ async def get_application_details(application_id: str, db: Session = Depends(get
                 "interview_id": interview.interview_id,
                 "status": interview.status,
                 "recommendation": interview.recommendation,
+                "assessment": interview.assessment,
+                "conversation_history": interview.conversation_history,
+                "has_recording": interview.recording_audio is not None,
                 "created_at": interview.created_at.isoformat() if interview.created_at else None,
                 "completed_at": interview.completed_at.isoformat() if interview.completed_at else None
             }
@@ -1505,6 +1580,88 @@ async def reject_candidate(application_id: str, reason: Optional[str] = Query(No
 
 
 # ============================================================
+# Admin Endpoints - Archive/Unarchive
+# ============================================================
+
+@app.post("/api/admin/applications/{application_id}/archive")
+async def archive_application(application_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Archive an application (soft delete - hidden from main view but not deleted)."""
+    if db is None:
+        db = next(get_db())
+    
+    application = db.query(DBApplication).filter(DBApplication.application_id == application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    application.is_archived = True
+    application.archived_at = datetime.now()
+    application.updated_at = datetime.now()
+    
+    db.commit()
+    
+    logger.info(f"📦 Application archived: {application_id}")
+    return {"message": "Application archived successfully", "is_archived": True}
+
+
+@app.post("/api/admin/applications/{application_id}/unarchive")
+async def unarchive_application(application_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Restore an archived application back to active view."""
+    if db is None:
+        db = next(get_db())
+    
+    application = db.query(DBApplication).filter(DBApplication.application_id == application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    application.is_archived = False
+    application.archived_at = None
+    application.updated_at = datetime.now()
+    
+    db.commit()
+    
+    logger.info(f"📤 Application unarchived: {application_id}")
+    return {"message": "Application restored successfully", "is_archived": False}
+
+
+@app.post("/api/admin/interviews/{interview_id}/archive")
+async def archive_interview(interview_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Archive an interview (soft delete - hidden from main view but not deleted)."""
+    if db is None:
+        db = next(get_db())
+    
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    
+    interview.is_archived = True
+    interview.archived_at = datetime.now()
+    
+    db.commit()
+    
+    logger.info(f"📦 Interview archived: {interview_id}")
+    return {"message": "Interview archived successfully", "is_archived": True}
+
+
+@app.post("/api/admin/interviews/{interview_id}/unarchive")
+async def unarchive_interview(interview_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Restore an archived interview back to active view."""
+    if db is None:
+        db = next(get_db())
+    
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    
+    interview.is_archived = False
+    interview.archived_at = None
+    
+    db.commit()
+    
+    logger.info(f"📤 Interview unarchived: {interview_id}")
+    return {"message": "Interview restored successfully", "is_archived": False}
+
+
+# ============================================================
 # Admin Endpoints - Interview Invitations
 # ============================================================
 
@@ -1558,7 +1715,11 @@ async def send_interview_invitation(
         logger.error(f"❌ Job offer not found for application {application_id}, job_offer_id: {application.job_offer_id}")
         raise HTTPException(status_code=404, detail="Job offer not found")
     
-    # Create interview record
+    # Create interview record (allow multiple interviews per application)
+    # Check if there are existing completed interviews, but still allow creating new ones
+    existing_interviews = db.query(DBInterview).filter(DBInterview.application_id == application_id).all()
+    completed_count = sum(1 for i in existing_interviews if i.status == "completed")
+    
     try:
         interview = DBInterview(
             application_id=application_id,
@@ -1569,7 +1730,7 @@ async def send_interview_invitation(
         db.add(interview)
         db.commit()
         db.refresh(interview)
-        logger.info(f"✅ Interview record created: {interview.interview_id}")
+        logger.info(f"✅ Interview record created: {interview.interview_id} (Attempt #{len(existing_interviews) + 1}, {completed_count} previous completed)")
     except Exception as e:
         logger.error(f"❌ Error creating interview record: {e}", exc_info=True)
         db.rollback()
@@ -1592,19 +1753,56 @@ async def send_interview_invitation(
 async def list_interviews(
     status: Optional[str] = Query(None),
     job_offer_id: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None, description="Filter interviews created on or after this date (ISO format)"),
+    date_to: Optional[str] = Query(None, description="Filter interviews created on or before this date (ISO format)"),
+    show_archived: Optional[bool] = Query(False, description="Include archived interviews (default: False - show only active)"),
     db: Session = Depends(get_db),
     current_admin: DBAdmin = Depends(get_current_admin)
 ):
-    """List all interview invitations and their status."""
+    """
+    List all interview invitations and their status.
+    
+    Query params:
+    - status: Filter by interview status (pending, completed, cancelled)
+    - job_offer_id: Filter by job offer
+    - date_from: Filter interviews created on or after this date (ISO format, e.g., 2024-01-15)
+    - date_to: Filter interviews created on or before this date (ISO format, e.g., 2024-01-31)
+    - show_archived: If true, show archived interviews; if false (default), show only active
+    """
     if db is None:
         db = next(get_db())
     
     query = db.query(DBInterview)
     
+    # Filter by archive status (by default, show only non-archived)
+    if not show_archived:
+        query = query.filter(or_(DBInterview.is_archived == False, DBInterview.is_archived == None))
+    
     if status:
         query = query.filter(DBInterview.status == status)
     if job_offer_id:
         query = query.filter(DBInterview.job_offer_id == job_offer_id)
+    
+    # Apply date filters
+    if date_from:
+        try:
+            if 'T' in date_from:
+                date_from_parsed = datetime.fromisoformat(date_from.replace('Z', '+00:00'))
+            else:
+                date_from_parsed = datetime.fromisoformat(date_from)
+            query = query.filter(DBInterview.created_at >= date_from_parsed)
+        except ValueError as e:
+            logger.warning(f"Invalid date_from format: {date_from}, error: {e}")
+    
+    if date_to:
+        try:
+            if 'T' in date_to:
+                date_to_parsed = datetime.fromisoformat(date_to.replace('Z', '+00:00'))
+            else:
+                date_to_parsed = datetime.fromisoformat(date_to + "T23:59:59")
+            query = query.filter(DBInterview.created_at <= date_to_parsed)
+        except ValueError as e:
+            logger.warning(f"Invalid date_to format: {date_to}, error: {e}")
     
     interviews = query.order_by(DBInterview.created_at.desc()).all()
     
@@ -1628,7 +1826,9 @@ async def list_interviews(
             "status": interview.status,
             "recommendation": interview.recommendation,
             "created_at": interview.created_at.isoformat() if interview.created_at else None,
-            "completed_at": interview.completed_at.isoformat() if interview.completed_at else None
+            "completed_at": interview.completed_at.isoformat() if interview.completed_at else None,
+            "is_archived": interview.is_archived or False,
+            "archived_at": interview.archived_at.isoformat() if interview.archived_at else None
         })
     
     return result
@@ -1663,8 +1863,32 @@ async def get_interview_details(interview_id: str, db: Session = Depends(get_db)
         "recommendation": interview.recommendation,
         "assessment": interview.assessment,
         "conversation_history": interview.conversation_history,
+        "has_recording": interview.recording_audio is not None,
+        "has_video": interview.recording_video is not None,
+        "recording_video": interview.recording_video,
+        "audio_segments": json.loads(interview.audio_segments) if hasattr(interview, 'audio_segments') and interview.audio_segments else [],
         "created_at": interview.created_at.isoformat() if interview.created_at else None,
         "completed_at": interview.completed_at.isoformat() if interview.completed_at else None
+    }
+
+
+@app.get("/api/admin/interviews/{interview_id}/recording")
+async def get_interview_recording(interview_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Get the interview recording audio file."""
+    if db is None:
+        db = next(get_db())
+    
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    
+    if not interview.recording_audio:
+        raise HTTPException(status_code=404, detail="No recording available for this interview")
+    
+    return {
+        "interview_id": interview_id,
+        "recording_audio": interview.recording_audio,
+        "audio_format": "mp3"
     }
 
 
@@ -1796,7 +2020,8 @@ async def get_candidate_interviews(
             "application_id": interview.application_id,
             "job_offer": {
                 "offer_id": job_offer.offer_id if job_offer else None,
-                "title": job_offer.title if job_offer else "Unknown"
+                "title": job_offer.title if job_offer else "Unknown",
+                "interview_mode": job_offer.interview_mode if job_offer else "realtime"
             },
             "status": interview.status,
             "recommendation": interview.recommendation,
@@ -1842,7 +2067,8 @@ async def get_candidate_interview_details(
         "job_offer": {
             "offer_id": job_offer.offer_id if job_offer else None,
             "title": job_offer.title if job_offer else "Unknown",
-            "description": job_offer.description if job_offer else ""
+            "description": job_offer.description if job_offer else "",
+            "interview_mode": job_offer.interview_mode if job_offer else "realtime"
         },
         "status": interview.status,
         "recommendation": interview.recommendation,
@@ -1852,6 +2078,786 @@ async def get_candidate_interview_details(
         "created_at": interview.created_at.isoformat() if interview.created_at else None,
         "completed_at": interview.completed_at.isoformat() if interview.completed_at else None,
         "interview_invited_at": application.interview_invited_at.isoformat() if application.interview_invited_at else None
+    }
+
+
+# ============================================================
+# Asynchronous Interview Endpoints
+# ============================================================
+
+class AsyncInterviewStartRequest(BaseModel):
+    interview_id: str
+    email: str
+    tts_provider: str = "elevenlabs"
+    tts_model: str = ""
+    stt_provider: str = "elevenlabs"
+    stt_model: str = ""
+    llm_provider: str = "gpt"  # Use "gpt" instead of "openai" to match config
+    llm_model: str = ""
+
+
+class AsyncInterviewAnswerRequest(BaseModel):
+    interview_id: str
+    email: str
+    audio: str  # Base64 encoded audio
+    question_number: int
+
+
+class AsyncInterviewRecordingRequest(BaseModel):
+    interview_id: str
+    email: str
+    user_audio: str  # Base64 encoded user audio (continuous recording)
+    ai_audio_chunks: list  # List of AI audio chunks with timestamps: [{"audio": base64, "format": "mp3", "timestamp": ms}]
+
+
+@app.post("/api/candidates/interviews/{interview_id}/async/start")
+async def start_async_interview(
+    interview_id: str,
+    request: AsyncInterviewStartRequest,
+    db: Session = Depends(get_db)
+):
+    """Start an asynchronous interview - returns the first question."""
+    if db is None:
+        db = next(get_db())
+    
+    # Verify interview exists and email matches
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    
+    application = db.query(DBApplication).filter(DBApplication.application_id == interview.application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    candidate = db.query(DBCandidate).filter(DBCandidate.candidate_id == application.candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    
+    if candidate.email != request.email:
+        raise HTTPException(status_code=403, detail="Access denied. Email does not match interview candidate.")
+    
+    # Check interview mode
+    job_offer = db.query(DBJobOffer).filter(DBJobOffer.offer_id == interview.job_offer_id).first()
+    if not job_offer:
+        raise HTTPException(status_code=404, detail="Job offer not found")
+    
+    if job_offer.interview_mode != "asynchronous":
+        raise HTTPException(status_code=400, detail="This interview is not in asynchronous mode")
+    
+    # Allow resuming in_progress interviews or starting new ones even if previous ones are completed
+    # Multiple interview attempts are allowed per application
+    
+    # If interview is in_progress, resume it (get current question from conversation)
+    if interview.status == "in_progress" and interview.conversation_history:
+        try:
+            conversation_history = json.loads(interview.conversation_history)
+            # Find the last assistant message (question)
+            last_question = None
+            for msg in reversed(conversation_history):
+                if msg.get("role") == "assistant":
+                    last_question = msg.get("content")
+                    break
+            
+            if last_question:
+                # Return the current question
+                return {
+                    "interview_id": interview_id,
+                    "question_number": sum(1 for m in conversation_history if m.get("role") == "assistant"),
+                    "question_text": last_question,
+                    "question_audio": "",  # No audio for resumed interviews
+                    "audio_format": "mp3",
+                    "status": "in_progress",
+                    "resumed": True
+                }
+        except:
+            pass  # If parsing fails, start fresh
+    
+    # Get providers
+    tts_provider = request.tts_provider or DEFAULT_TTS_PROVIDER
+    stt_provider = request.stt_provider or DEFAULT_STT_PROVIDER
+    llm_provider = request.llm_provider or DEFAULT_LLM_PROVIDER
+    
+    # Normalize provider names (handle "openai" -> "gpt")
+    if llm_provider == "openai" or llm_provider == "gpt":
+        llm_provider = "gpt"
+    
+    tts_model = request.tts_model or TTS_PROVIDERS[tts_provider]["default_model"]
+    stt_model = request.stt_model or STT_PROVIDERS[stt_provider]["default_model"]
+    llm_model = request.llm_model or LLM_PROVIDERS[llm_provider]["default_model"]
+    
+    # Build interview context
+    from backend.config import build_interviewer_system_prompt
+    import json
+    
+    required_languages_list = []
+    if job_offer.required_languages:
+        try:
+            required_languages_list = json.loads(job_offer.required_languages)
+        except:
+            pass
+    
+    interview_context = {
+        "job_title": job_offer.title,
+        "job_offer_description": job_offer.description,
+        "candidate_cv_text": application.cv_text,
+        "required_languages": job_offer.required_languages,
+        "interview_start_language": job_offer.interview_start_language or "English",
+        "required_languages_list": required_languages_list,
+        "custom_questions": job_offer.custom_questions,
+        "evaluation_weights": job_offer.evaluation_weights
+    }
+    
+    # Generate opening greeting/question
+    llm_funcs = get_llm_functions(llm_provider)
+    greeting = llm_funcs["generate_opening_greeting"](
+        model_id=llm_model,
+        interview_context=interview_context,
+        candidate_name=candidate.full_name
+    )
+    
+    # Generate audio for greeting
+    tts_func = get_tts_function(tts_provider)
+    audio_data = tts_func(greeting, model_id=tts_model, voice_id=None)
+    audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+    
+    # Initialize conversation history
+    conversation_history = [
+        {"role": "assistant", "content": greeting}
+    ]
+    
+    # Store provider preferences for later use
+    provider_preferences = {
+        "tts_provider": tts_provider,
+        "tts_model": tts_model,
+        "stt_provider": stt_provider,
+        "stt_model": stt_model,
+        "llm_provider": llm_provider,
+        "llm_model": llm_model
+    }
+    
+    # Initialize audio segments with first question
+    audio_segments = [{
+        "type": "question",
+        "question_number": 1,
+        "audio": audio_base64,
+        "format": "mp3",
+        "text": greeting,
+        "timestamp": datetime.now().isoformat()
+    }]
+    
+    # Update interview status, conversation, and provider preferences
+    interview.status = "in_progress"
+    interview.conversation_history = json.dumps(conversation_history)
+    interview.provider_preferences = json.dumps(provider_preferences)
+    if hasattr(interview, 'audio_segments'):
+        interview.audio_segments = json.dumps(audio_segments)
+    db.commit()
+    
+    logger.info(f"🎤 Started asynchronous interview: {interview_id} with providers: {llm_provider}/{llm_model}")
+    
+    return {
+        "interview_id": interview_id,
+        "question_number": 1,
+        "question_text": greeting,
+        "question_audio": audio_base64,
+        "audio_format": "mp3",
+        "status": "in_progress"
+    }
+
+
+@app.post("/api/candidates/interviews/{interview_id}/async/submit-answer")
+async def submit_async_answer(
+    interview_id: str,
+    request: AsyncInterviewAnswerRequest,
+    db: Session = Depends(get_db)
+):
+    """Submit an answer in asynchronous interview - returns next question or assessment."""
+    if db is None:
+        db = next(get_db())
+    
+    # Verify interview exists and email matches
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    
+    application = db.query(DBApplication).filter(DBApplication.application_id == interview.application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    candidate = db.query(DBCandidate).filter(DBCandidate.candidate_id == application.candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    
+    if candidate.email != request.email:
+        raise HTTPException(status_code=403, detail="Access denied. Email does not match interview candidate.")
+    
+    if interview.status not in ["in_progress", "pending"]:
+        raise HTTPException(status_code=400, detail="Interview is not in progress")
+    
+    # Get job offer and check mode
+    job_offer = db.query(DBJobOffer).filter(DBJobOffer.offer_id == interview.job_offer_id).first()
+    if not job_offer:
+        raise HTTPException(status_code=404, detail="Job offer not found")
+    
+    if job_offer.interview_mode != "asynchronous":
+        raise HTTPException(status_code=400, detail="This interview is not in asynchronous mode")
+    
+    # Decode audio
+    try:
+        audio_bytes = base64.b64decode(request.audio)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid audio data: {str(e)}")
+    
+    # Get conversation history
+    conversation_history = []
+    if interview.conversation_history:
+        try:
+            conversation_history = json.loads(interview.conversation_history)
+        except:
+            conversation_history = []
+    
+    # Get providers from stored preferences or use defaults
+    provider_preferences = {}
+    try:
+        # Handle case where column might not exist yet (for old interviews)
+        if hasattr(interview, 'provider_preferences') and interview.provider_preferences:
+            try:
+                provider_preferences = json.loads(interview.provider_preferences)
+            except:
+                provider_preferences = {}
+    except AttributeError:
+        # Column doesn't exist in database yet
+        provider_preferences = {}
+    
+    tts_provider = provider_preferences.get("tts_provider") or DEFAULT_TTS_PROVIDER
+    tts_model = provider_preferences.get("tts_model") or TTS_PROVIDERS[tts_provider]["default_model"]
+    stt_provider = provider_preferences.get("stt_provider") or DEFAULT_STT_PROVIDER
+    stt_model = provider_preferences.get("stt_model") or STT_PROVIDERS[stt_provider]["default_model"]
+    
+    # For LLM, ALWAYS use GPT to avoid Gemini quota issues
+    # Force GPT regardless of stored preferences to avoid quota errors
+    llm_provider = "gpt"  # Always use GPT to avoid Gemini quota issues
+    llm_model = provider_preferences.get("llm_model") or LLM_PROVIDERS[llm_provider]["default_model"]
+    
+    stored_llm = provider_preferences.get("llm_provider")
+    if stored_llm and stored_llm != "gpt" and stored_llm != "openai":
+        logger.warning(f"⚠️ Stored LLM provider was '{stored_llm}' but forcing GPT to avoid quota issues")
+    
+    logger.info(f"📝 Using providers for async interview: LLM={llm_provider}/{llm_model}, TTS={tts_provider}/{tts_model}, STT={stt_provider}/{stt_model}")
+    
+    # Speech to Text
+    stt_func = get_stt_function(stt_provider)
+    if stt_provider == "cartesia":
+        user_text = stt_func(audio_bytes, audio_format="webm", model_id=stt_model)
+    else:
+        user_text = stt_func(audio_bytes, model_id=stt_model)
+    
+    if not user_text.strip():
+        raise HTTPException(status_code=400, detail="Could not transcribe audio. Please try again.")
+    
+    # Add user response to conversation
+    conversation_history.append({"role": "user", "content": user_text})
+    
+    # Build interview context
+    from backend.config import build_interviewer_system_prompt
+    import json as json_module
+    
+    required_languages_list = []
+    if job_offer.required_languages:
+        try:
+            required_languages_list = json_module.loads(job_offer.required_languages)
+        except:
+            pass
+    
+    interview_context = {
+        "job_title": job_offer.title,
+        "job_offer_description": job_offer.description,
+        "candidate_cv_text": application.cv_text,
+        "required_languages": job_offer.required_languages,
+        "interview_start_language": job_offer.interview_start_language or "English",
+        "required_languages_list": required_languages_list,
+        "custom_questions": job_offer.custom_questions,
+        "evaluation_weights": job_offer.evaluation_weights
+    }
+    
+    try:
+        # Check if we should generate assessment (after a reasonable number of questions)
+        question_count = sum(1 for msg in conversation_history if msg["role"] == "assistant")
+        
+        # Generate next question or assessment
+        # Ensure we're using GPT (safety check)
+        if llm_provider != "gpt":
+            logger.error(f"❌ CRITICAL: llm_provider is '{llm_provider}' but should be 'gpt'. Forcing GPT.")
+            llm_provider = "gpt"
+            llm_model = LLM_PROVIDERS[llm_provider]["default_model"]
+        
+        llm_funcs = get_llm_functions(llm_provider)
+        logger.info(f"🔧 Final LLM provider before calling get_llm_functions: {llm_provider}")
+        
+        # Determine if we should end the interview (after ~5-7 questions)
+        should_end = question_count >= 5
+        
+        if should_end:
+            # Generate assessment
+            assessment = llm_funcs["generate_assessment"](
+                conversation_history=conversation_history,
+                model_id=llm_model,
+                interview_context=interview_context
+            )
+            
+            # Save final answer audio segment
+            audio_segments = []
+            if hasattr(interview, 'audio_segments') and interview.audio_segments:
+                try:
+                    audio_segments = json.loads(interview.audio_segments)
+                except:
+                    audio_segments = []
+            
+            # Save candidate's final answer audio
+            audio_segments.append({
+                "type": "answer",
+                "question_number": request.question_number,
+                "audio": request.audio,  # User's answer audio (webm)
+                "format": "webm",
+                "text": user_text,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Update interview
+            interview.status = "completed"
+            interview.completed_at = datetime.now()
+            interview.assessment = assessment
+            interview.conversation_history = json.dumps(conversation_history)
+            if hasattr(interview, 'audio_segments'):
+                interview.audio_segments = json.dumps(audio_segments)
+            
+            # Determine recommendation
+            recommendation = "recommended"  # Default, could be enhanced with LLM analysis
+            interview.recommendation = recommendation
+            
+            # Update application
+            application.interview_completed_at = datetime.now()
+            application.interview_recommendation = recommendation
+            
+            db.commit()
+            
+            logger.info(f"✅ Completed asynchronous interview: {interview_id}")
+            
+            return {
+                "interview_id": interview_id,
+                "status": "completed",
+                "assessment": assessment,
+                "recommendation": recommendation
+            }
+        else:
+            # Generate next question
+            next_question = llm_funcs["generate_response"](
+                conversation_history=conversation_history[:-1],  # Exclude the just-added user message
+                user_message=user_text,
+                model_id=llm_model,
+                interview_context=interview_context
+            )
+            
+            # Generate audio for question
+            tts_func = get_tts_function(tts_provider)
+            audio_data = tts_func(next_question, model_id=tts_model, voice_id=None)
+            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+            
+            # Add assistant response to conversation
+            conversation_history.append({"role": "assistant", "content": next_question})
+            
+            # Save audio segments (question and answer separately)
+            audio_segments = []
+            if hasattr(interview, 'audio_segments') and interview.audio_segments:
+                try:
+                    audio_segments = json.loads(interview.audio_segments)
+                except:
+                    audio_segments = []
+            
+            # Save candidate's answer audio
+            audio_segments.append({
+                "type": "answer",
+                "question_number": request.question_number,
+                "audio": request.audio,  # User's answer audio (webm)
+                "format": "webm",
+                "text": user_text,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Save AI's question audio
+            audio_segments.append({
+                "type": "question",
+                "question_number": question_count + 1,
+                "audio": audio_base64,  # AI's question audio (mp3)
+                "format": "mp3",
+                "text": next_question,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Update interview
+            interview.conversation_history = json.dumps(conversation_history)
+            if hasattr(interview, 'audio_segments'):
+                interview.audio_segments = json.dumps(audio_segments)
+            db.commit()
+            
+            logger.info(f"📝 Question {question_count + 1} generated for interview: {interview_id}")
+            
+            return {
+                "interview_id": interview_id,
+                "question_number": question_count + 1,
+                "question_text": next_question,
+                "question_audio": audio_base64,
+                "audio_format": "mp3",
+                "status": "in_progress"
+            }
+    except Exception as e:
+        logger.error(f"❌ Error in submit_async_answer: {str(e)}", exc_info=True)
+        # Check if conversation history already updated in memory
+        if len(conversation_history) > 0 and conversation_history[-1]["role"] == "user":
+             # Remove the user message if we couldn't generate response to avoid state mismatch
+             conversation_history.pop()
+        raise HTTPException(status_code=500, detail=f"Error processing answer: {str(e)}")
+
+
+@app.post("/api/candidates/interviews/{interview_id}/async/save-recording")
+async def save_async_interview_recording(
+    interview_id: str,
+    request: AsyncInterviewRecordingRequest,
+    db: Session = Depends(get_db)
+):
+    """Save the full interview recording (user audio + AI audio combined)."""
+    if db is None:
+        db = next(get_db())
+    
+    # Verify interview exists and email matches
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    
+    application = db.query(DBApplication).filter(DBApplication.application_id == interview.application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    candidate = db.query(DBCandidate).filter(DBCandidate.candidate_id == application.candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    
+    if candidate.email != request.email:
+        raise HTTPException(status_code=403, detail="Access denied. Email does not match interview candidate.")
+    
+    # Validate that we have at least some audio to save
+    if not request.user_audio and (not request.ai_audio_chunks or len(request.ai_audio_chunks) == 0):
+        logger.warning(f"⚠️ No audio data provided for interview {interview_id}")
+        return {
+            "interview_id": interview_id,
+            "status": "skipped",
+            "message": "No audio data to save"
+        }
+    
+    # Try to combine audio with pydub, but fallback to saving user audio if it fails
+    try:
+        from pydub import AudioSegment
+        from io import BytesIO
+        
+        combined_audio = None
+        user_audio_valid = False
+        
+        # Try to process user audio
+        if request.user_audio:
+            try:
+                user_audio_bytes = base64.b64decode(request.user_audio)
+                if len(user_audio_bytes) > 0:
+                    user_audio = AudioSegment.from_file(BytesIO(user_audio_bytes), format="webm")
+                    combined_audio = user_audio
+                    user_audio_valid = True
+                    logger.info(f"✅ Processed user audio: {len(user_audio_bytes)} bytes")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not process user audio with pydub: {e}")
+                # Continue to try AI audio or save user audio as-is
+        
+        # Process AI audio chunks
+        if request.ai_audio_chunks and len(request.ai_audio_chunks) > 0:
+            # Sort AI audio chunks by timestamp
+            ai_chunks = sorted(request.ai_audio_chunks, key=lambda x: x.get("timestamp", 0))
+            
+            # If we don't have user audio, start with first AI chunk
+            if not user_audio_valid and len(ai_chunks) > 0:
+                try:
+                    first_chunk = ai_chunks[0]
+                    ai_audio_bytes = base64.b64decode(first_chunk["audio"])
+                    ai_format = first_chunk.get("format", "mp3")
+                    combined_audio = AudioSegment.from_file(BytesIO(ai_audio_bytes), format=ai_format)
+                    ai_chunks = ai_chunks[1:]  # Skip first chunk as we already added it
+                    logger.info(f"✅ Started with AI audio chunk")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not process first AI audio chunk: {e}")
+            
+            # Append remaining AI audio chunks
+            for chunk in ai_chunks:
+                try:
+                    ai_audio_bytes = base64.b64decode(chunk["audio"])
+                    ai_format = chunk.get("format", "mp3")
+                    ai_audio = AudioSegment.from_file(BytesIO(ai_audio_bytes), format=ai_format)
+                    # Add a small silence between chunks
+                    if combined_audio:
+                        combined_audio += AudioSegment.silent(duration=500)  # 500ms silence
+                        combined_audio += ai_audio
+                    else:
+                        combined_audio = ai_audio
+                except Exception as e:
+                    logger.warning(f"⚠️ Error processing AI audio chunk: {e}")
+                    continue
+        
+        # Export combined audio to MP3
+        if combined_audio:
+            try:
+                output = BytesIO()
+                combined_audio.export(output, format="mp3", bitrate="128k")
+                output.seek(0)
+                
+                # Encode to base64 for storage
+                recording_base64 = base64.b64encode(output.read()).decode('utf-8')
+                
+                # Store in database
+                interview.recording_audio = recording_base64
+                db.commit()
+                
+                logger.info(f"✅ Saved combined interview recording for interview: {interview_id} ({len(recording_base64)} chars)")
+                
+                return {
+                    "interview_id": interview_id,
+                    "status": "saved",
+                    "message": "Recording saved successfully"
+                }
+            except Exception as e:
+                logger.error(f"❌ Error exporting combined audio: {e}", exc_info=True)
+                # Fall through to save user audio only
+    except ImportError as e:
+        logger.warning(f"⚠️ pydub not available: {e}")
+    except Exception as e:
+        logger.error(f"❌ Error in audio processing: {e}", exc_info=True)
+        # Continue to fallback
+    
+    # Fallback: Save user audio only if combining failed or pydub not available
+    if request.user_audio:
+        try:
+            # Validate base64 before saving
+            try:
+                test_decode = base64.b64decode(request.user_audio)
+                if len(test_decode) == 0:
+                    raise ValueError("User audio is empty after decoding")
+            except Exception as e:
+                logger.error(f"❌ Invalid user audio data: {e}")
+                raise HTTPException(status_code=400, detail=f"Invalid audio data: {str(e)}")
+            
+            interview.recording_audio = request.user_audio  # Store user audio as-is (base64 webm)
+            db.commit()
+            logger.info(f"✅ Saved user audio only for interview: {interview_id} ({len(request.user_audio)} chars)")
+            return {
+                "interview_id": interview_id,
+                "status": "saved",
+                "message": "Recording saved (user audio only - audio combining not available)"
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error saving user audio to database: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to save recording: {str(e)}")
+    
+
+
+@app.post("/api/candidates/interviews/{interview_id}/async/upload-video")
+async def upload_interview_video(
+    interview_id: str,
+    email: str = Form(...),
+    video_file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """Upload video recording for an interview."""
+    if db is None:
+        db = next(get_db())
+    
+    # Verify interview exists
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    
+    # Verify application and candidate
+    application = db.query(DBApplication).filter(DBApplication.application_id == interview.application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    candidate = db.query(DBCandidate).filter(DBCandidate.candidate_id == application.candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    
+    if candidate.email != email:
+        raise HTTPException(status_code=403, detail="Access denied. Email does not match interview candidate.")
+    
+    try:
+        # Save video file
+        file_extension = "webm"  # Default for MediaRecorder
+        if video_file.filename and '.' in video_file.filename:
+            file_extension = video_file.filename.split('.')[-1]
+            
+        file_path = f"uploads/videos/{interview_id}.{file_extension}"
+        
+        # Write file to disk
+        with open(file_path, "wb") as buffer:
+            content = await video_file.read()
+            buffer.write(content)
+            
+        # Update database record (store relative path for serving)
+        # Serving path will be /uploads/videos/{interview_id}.{file_extension}
+        interview.recording_video = f"videos/{interview_id}.{file_extension}"
+        db.commit()
+        
+        logger.info(f"✅ Video uploaded successfully for interview {interview_id}: {file_path}")
+        
+        return {
+            "interview_id": interview_id,
+            "status": "uploaded",
+            "file_path": interview.recording_video,
+            "message": "Video uploaded successfully"
+        }
+    except Exception as e:
+        logger.error(f"❌ Error uploading video: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to upload video: {str(e)}")
+
+
+class AsyncInterviewEndRequest(BaseModel):
+    interview_id: str
+    email: str
+
+
+@app.post("/api/candidates/interviews/{interview_id}/async/end")
+async def end_async_interview(
+    interview_id: str,
+    request: AsyncInterviewEndRequest,
+    db: Session = Depends(get_db)
+):
+    """End an asynchronous interview - generates assessment and marks it as completed."""
+    if db is None:
+        db = next(get_db())
+    
+    # Verify interview exists and email matches
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    
+    application = db.query(DBApplication).filter(DBApplication.application_id == interview.application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    candidate = db.query(DBCandidate).filter(DBCandidate.candidate_id == application.candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    
+    if candidate.email != request.email:
+        raise HTTPException(status_code=403, detail="Access denied. Email does not match interview candidate.")
+    
+    # Get job offer for interview context
+    job_offer = db.query(DBJobOffer).filter(DBJobOffer.offer_id == interview.job_offer_id).first()
+    if not job_offer:
+        raise HTTPException(status_code=404, detail="Job offer not found")
+    
+    # Get conversation history
+    conversation_history = []
+    if interview.conversation_history:
+        try:
+            conversation_history = json.loads(interview.conversation_history)
+        except:
+            conversation_history = []
+    
+    # Only generate assessment if there's conversation history
+    assessment = None
+    recommendation = "not_recommended"  # Default if no conversation
+    
+    if conversation_history and len(conversation_history) > 0:
+        try:
+            # Get providers from stored preferences or use defaults
+            provider_preferences = {}
+            try:
+                if hasattr(interview, 'provider_preferences') and interview.provider_preferences:
+                    try:
+                        provider_preferences = json.loads(interview.provider_preferences)
+                    except:
+                        provider_preferences = {}
+            except AttributeError:
+                provider_preferences = {}
+            
+            # For LLM, ALWAYS use GPT to avoid Gemini quota issues
+            llm_provider = "gpt"
+            llm_model = provider_preferences.get("llm_model") or LLM_PROVIDERS[llm_provider]["default_model"]
+            
+            logger.info(f"📝 Generating assessment for ended async interview: {interview_id} using LLM={llm_provider}/{llm_model}")
+            
+            # Build interview context
+            from backend.config import build_interviewer_system_prompt
+            import json as json_module
+            
+            required_languages_list = []
+            if job_offer.required_languages:
+                try:
+                    required_languages_list = json_module.loads(job_offer.required_languages)
+                except:
+                    pass
+            
+            interview_context = {
+                "job_title": job_offer.title,
+                "job_offer_description": job_offer.description,
+                "candidate_cv_text": application.cv_text,
+                "required_languages": job_offer.required_languages,
+                "interview_start_language": job_offer.interview_start_language or "English",
+                "required_languages_list": required_languages_list,
+                "custom_questions": job_offer.custom_questions,
+                "evaluation_weights": job_offer.evaluation_weights
+            }
+            
+            # Generate assessment
+            llm_funcs = get_llm_functions(llm_provider)
+            assessment = llm_funcs["generate_assessment"](
+                conversation_history=conversation_history,
+                model_id=llm_model,
+                interview_context=interview_context
+            )
+            
+            # Determine recommendation (default to recommended if assessment was generated)
+            recommendation = "recommended"
+            
+            logger.info(f"✅ Generated assessment for ended async interview: {interview_id}")
+        except Exception as e:
+            logger.error(f"❌ Error generating assessment for ended async interview: {e}")
+            # Still mark as completed even if assessment generation fails
+            assessment = "**Interview Completed**\n\nThank you for your time! Our HR team will review your application and get back to you soon.\n\nWe appreciate your interest in this position."
+    else:
+        logger.warning(f"⚠️ No conversation history found for interview {interview_id} - marking as completed without assessment")
+        assessment = "**Interview Ended**\n\nThank you for your time! Our HR team will review your application and get back to you soon."
+    
+    # Update interview with assessment and status
+    interview.status = "completed"
+    interview.completed_at = datetime.utcnow()
+    if assessment:
+        interview.assessment = assessment
+    interview.recommendation = recommendation
+    # Ensure conversation history is saved
+    if conversation_history:
+        interview.conversation_history = json.dumps(conversation_history)
+    
+    # Update application
+    application.interview_completed_at = datetime.utcnow()
+    application.interview_recommendation = recommendation
+    
+    db.commit()
+    
+    logger.info(f"✅ Marked async interview as completed with assessment: {interview_id}")
+    
+    return {
+        "interview_id": interview_id,
+        "status": "completed",
+        "assessment": assessment,
+        "recommendation": recommendation,
+        "message": "Interview ended successfully"
     }
 
 
@@ -2296,10 +3302,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 required_languages = db_job_offer.required_languages or ""
                 interview_start_language = db_job_offer.interview_start_language or ""
                 interview_duration_minutes = db_job_offer.interview_duration_minutes or INTERVIEW_TIME_LIMIT_MINUTES
+                custom_questions = db_job_offer.custom_questions or ""
+                evaluation_weights = db_job_offer.evaluation_weights or ""
             else:
                 # Initialize language variables if not set
                 required_languages = ""
                 interview_start_language = ""
+                custom_questions = ""
+                evaluation_weights = ""
             
             # Legacy flow: use evaluation_id from memory
             if evaluation_id and not job_offer:
@@ -2336,6 +3346,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         required_languages = db_job_offer.required_languages or ""
                         interview_start_language = db_job_offer.interview_start_language or ""
                         interview_duration_minutes = db_job_offer.interview_duration_minutes or INTERVIEW_TIME_LIMIT_MINUTES
+                        custom_questions = db_job_offer.custom_questions or ""
+                        evaluation_weights = db_job_offer.evaluation_weights or ""
                 
                 candidate_cv_text = evaluation.get("parsed_cv_text", "")
             
@@ -2346,6 +3358,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 interview_start_language = ""
             if 'interview_duration_minutes' not in locals():
                 interview_duration_minutes = INTERVIEW_TIME_LIMIT_MINUTES
+            if 'custom_questions' not in locals():
+                custom_questions = ""
+            if 'evaluation_weights' not in locals():
+                evaluation_weights = ""
             
             # Create new conversation with job and candidate context
             conversation_id = f"conv_{len(active_conversations)}"
@@ -2354,7 +3370,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 candidate_cv_text=candidate_cv_text,
                 job_title=job_offer.title if job_offer else None,
                 required_languages=required_languages,
-                interview_start_language=interview_start_language
+                interview_start_language=interview_start_language,
+                custom_questions=custom_questions,
+                evaluation_weights=evaluation_weights
             )
             # Set CV candidate name if available (source of truth)
             if 'candidate_name_from_cv' in locals() and candidate_name_from_cv:

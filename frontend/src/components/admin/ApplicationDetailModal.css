@@ -258,3 +258,109 @@
   cursor: not-allowed;
 }
 
+/* Dual Evaluation Styles */
+.dual-evaluation {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.evaluation-card {
+  padding: 1.25rem;
+  background: var(--bg-card);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.evaluation-card h4 {
+  margin: 0 0 0.75rem 0;
+  font-size: 1.1rem;
+  color: var(--text-primary);
+}
+
+.evaluation-card .check-result {
+  display: inline-block;
+  padding: 0.35rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+
+.evaluation-card .check-result.passed {
+  background: rgba(0, 212, 170, 0.15);
+  color: #00d4aa;
+}
+
+.evaluation-card .check-result.failed {
+  background: rgba(255, 68, 68, 0.15);
+  color: #ff4444;
+}
+
+.evaluation-card .language-details {
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.evaluation-card .language-details p {
+  margin: 0.25rem 0;
+  color: var(--text-secondary);
+}
+
+.evaluation-card .language-details .missing {
+  color: #ff6b6b;
+}
+
+.evaluation-card .reasoning {
+  margin: 0.5rem 0 0 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.evaluation-card .no-data {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.evaluation-card .score-breakdown {
+  margin-top: 0.5rem;
+  gap: 0.5rem;
+}
+
+.evaluation-card .score-breakdown div {
+  font-size: 0.85rem;
+  padding: 0.5rem 0.75rem;
+}
+
+/* Required Languages Badge in Job Section */
+.required-languages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.lang-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: rgba(108, 99, 255, 0.15);
+  color: var(--primary);
+  padding: 0.25rem 0.6rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.required-languages-section {
+  margin: 0.75rem 0;
+}
+
+.required-languages-section>strong {
+  display: block;
+  margin-bottom: 0.4rem;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}

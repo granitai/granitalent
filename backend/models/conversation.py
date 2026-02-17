@@ -18,7 +18,9 @@ class ConversationManager:
         candidate_cv_text: Optional[str] = None,
         job_title: Optional[str] = None,
         required_languages: Optional[str] = None,
-        interview_start_language: Optional[str] = None
+        interview_start_language: Optional[str] = None,
+        custom_questions: Optional[str] = None,
+        evaluation_weights: Optional[str] = None
     ):
         """
         Initialize a new conversation.
@@ -29,6 +31,8 @@ class ConversationManager:
             job_title: Title of the job position
             required_languages: JSON string array of required languages
             interview_start_language: Language to start the interview with
+            custom_questions: JSON string array of custom questions from recruiter
+            evaluation_weights: JSON string object of evaluation weights
         """
         self.history: List[Dict[str, str]] = []
         self.created_at = datetime.now()
@@ -37,6 +41,8 @@ class ConversationManager:
         self.job_title = job_title
         self.required_languages = required_languages
         self.interview_start_language = interview_start_language
+        self.custom_questions = custom_questions
+        self.evaluation_weights = evaluation_weights
         self.phase = self.PHASE_AUDIO_CHECK  # Start with audio check
         self.candidate_name: Optional[str] = None
         self.candidate_name_spelling: Optional[str] = None
@@ -71,6 +77,8 @@ class ConversationManager:
             "questions_in_current_language": self.questions_in_current_language,
             "untested_languages": untested,
             "languages_remaining_count": len(untested),
+            "custom_questions": self.custom_questions,
+            "evaluation_weights": self.evaluation_weights,
         }
         if time_remaining_minutes is not None:
             context["time_remaining_minutes"] = time_remaining_minutes
