@@ -37,3 +37,4 @@ frontend/.vite/
 *.db
 *.sqlite
 *.sqlite3
+SSH_UPDATE_GUIDE.md
