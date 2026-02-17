@@ -13,6 +13,8 @@ services:
     volumes:
       # Persist the database
       - ./backend/database.db:/app/backend/database.db
+      # Persist uploaded videos
+      - ./backend/uploads:/app/uploads
       # Optional: for logs
       - ./logs:/app/logs
     restart: unless-stopped
@@ -28,7 +30,7 @@ services:
       dockerfile: Dockerfile
     container_name: ai-interview-frontend
     ports:
-      - "3000:80"
+      - "80:80"
     depends_on:
       - backend
     restart: unless-stopped

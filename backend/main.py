@@ -1150,6 +1150,7 @@ async def get_public_job_offers(db: Session = Depends(get_db)):
             "required_skills": offer.required_skills,
             "experience_level": offer.experience_level,
             "education_requirements": offer.education_requirements,
+            "required_languages": offer.required_languages,
             "created_at": offer.created_at.isoformat() if offer.created_at else None,
             "updated_at": offer.updated_at.isoformat() if offer.updated_at else None
         }
@@ -1287,6 +1288,43 @@ async def get_application_details(application_id: str, db: Session = Depends(get
     # Get interview records
     interviews = db.query(DBInterview).filter(DBInterview.application_id == application_id).all()
     
+    # Reconstruct language_check from stored data
+    language_check = None
+    if job_offer and job_offer.required_languages:
+        try:
+            from backend.services.language_evaluator import _check_languages
+            language_check = _check_languages(
+                application.cv_text or "",
+                job_offer.description or "",
+                job_offer.required_languages
+            )
+        except Exception as e:
+            logger.warning(f"Could not reconstruct language_check: {e}")
+    
+    # Reconstruct job_fit_check from stored score fields
+    job_fit_check = None
+    if application.ai_score is not None:
+        # Extract job fit reasoning from ai_reasoning (after the " | " separator if present)
+        job_fit_reasoning = application.ai_reasoning or ""
+        if " | " in job_fit_reasoning:
+            parts = job_fit_reasoning.split(" | ")
+            # Job fit is typically the second part
+            job_fit_reasoning = parts[-1] if len(parts) > 1 else job_fit_reasoning
+            # Remove emoji prefix like "✅ Job Fit: " or "❌ Job Fit: "
+            for prefix in ["✅ Job Fit: ", "❌ Job Fit: "]:
+                if job_fit_reasoning.startswith(prefix):
+                    job_fit_reasoning = job_fit_reasoning[len(prefix):]
+                    break
+        
+        job_fit_check = {
+            "status": application.ai_status,
+            "score": application.ai_score,
+            "skills_match": application.ai_skills_match,
+            "experience_match": application.ai_experience_match,
+            "education_match": application.ai_education_match,
+            "reasoning": job_fit_reasoning
+        }
+    
     return {
         "application_id": application.application_id,
         "candidate": {
@@ -1300,7 +1338,8 @@ async def get_application_details(application_id: str, db: Session = Depends(get
         "job_offer": {
             "offer_id": job_offer.offer_id if job_offer else None,
             "title": job_offer.title if job_offer else "Unknown",
-            "description": job_offer.description if job_offer else ""
+            "description": job_offer.description if job_offer else "",
+            "required_languages": job_offer.required_languages if job_offer else None
         },
         "cover_letter": application.cover_letter,
         "cv_text": application.cv_text,
@@ -1311,6 +1350,8 @@ async def get_application_details(application_id: str, db: Session = Depends(get
         "ai_skills_match": application.ai_skills_match,
         "ai_experience_match": application.ai_experience_match,
         "ai_education_match": application.ai_education_match,
+        "language_check": language_check,
+        "job_fit_check": job_fit_check,
         "hr_status": application.hr_status,
         "hr_override_reason": application.hr_override_reason,
         "interview_invited_at": application.interview_invited_at.isoformat() if application.interview_invited_at else None,
@@ -1659,6 +1700,51 @@ async def unarchive_interview(interview_id: str, db: Session = Depends(get_db), 
     
     logger.info(f"📤 Interview unarchived: {interview_id}")
     return {"message": "Interview restored successfully", "is_archived": False}
+
+
+# ============================================================
+# Admin Endpoints - Permanent Deletion
+# ============================================================
+
+@app.delete("/api/admin/applications/{application_id}")
+async def delete_application(application_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Permanently delete an application and its related records (CV evaluations, interviews)."""
+    if db is None:
+        db = next(get_db())
+    
+    application = db.query(DBApplication).filter(DBApplication.application_id == application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    # Delete related CV evaluations
+    db.query(DBCVEvaluation).filter(DBCVEvaluation.application_id == application_id).delete()
+    
+    # Delete related interviews
+    db.query(DBInterview).filter(DBInterview.application_id == application_id).delete()
+    
+    # Delete the application itself
+    db.delete(application)
+    db.commit()
+    
+    logger.info(f"🗑️ Application permanently deleted: {application_id}")
+    return {"message": "Application permanently deleted"}
+
+
+@app.delete("/api/admin/interviews/{interview_id}")
+async def delete_interview(interview_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Permanently delete an interview record."""
+    if db is None:
+        db = next(get_db())
+    
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    
+    db.delete(interview)
+    db.commit()
+    
+    logger.info(f"🗑️ Interview permanently deleted: {interview_id}")
+    return {"message": "Interview permanently deleted"}
 
 
 # ============================================================
@@ -3508,21 +3594,22 @@ async def websocket_endpoint(websocket: WebSocket):
                                 recommendation = extract_recommendation(assessment)
                                 detailed_scores = extract_detailed_scores(assessment)
                                 
-                                # Try to find application_id from evaluation_id
-                                application_id = None
-                                evaluation_id = config.get("evaluation_id")
-                                if evaluation_id:
-                                    # Check in-memory first
-                                    if evaluation_id in cv_evaluations:
-                                        application_id = cv_evaluations[evaluation_id].get("application_id")
-                                    
-                                    # Also check database
-                                    if not application_id:
-                                        cv_eval = db.query(DBCVEvaluation).filter(
-                                            DBCVEvaluation.evaluation_id == evaluation_id
-                                        ).first()
-                                        if cv_eval:
-                                            application_id = cv_eval.application_id
+                                # Get application_id from config first, then try evaluation_id
+                                application_id = config.get("application_id")
+                                if not application_id:
+                                    evaluation_id = config.get("evaluation_id")
+                                    if evaluation_id:
+                                        # Check in-memory first
+                                        if evaluation_id in cv_evaluations:
+                                            application_id = cv_evaluations[evaluation_id].get("application_id")
+                                        
+                                        # Also check database
+                                        if not application_id:
+                                            cv_eval = db.query(DBCVEvaluation).filter(
+                                                DBCVEvaluation.evaluation_id == evaluation_id
+                                            ).first()
+                                            if cv_eval:
+                                                application_id = cv_eval.application_id
                                 
                                 job_offer_id = config.get("job_offer_id")
                                 candidate_name = conv.get_candidate_name() or config.get("candidate_name")
@@ -3530,12 +3617,42 @@ async def websocket_endpoint(websocket: WebSocket):
                                 
                                 # Create or update interview record
                                 interview = None
-                                if application_id:
-                                    # Try to find existing interview for this application
+                                
+                                # First, try to find by interview_id from config (this is the record created when interview started)
+                                config_interview_id = config.get("interview_id")
+                                if config_interview_id:
+                                    interview = db.query(DBInterview).filter(
+                                        DBInterview.interview_id == config_interview_id
+                                    ).first()
+                                    if interview:
+                                        logger.info(f"✅ Found interview by config interview_id: {config_interview_id}")
+                                
+                                # Fallback: look up by application_id
+                                if not interview and application_id:
                                     interview = db.query(DBInterview).filter(
                                         DBInterview.application_id == application_id
                                     ).order_by(DBInterview.created_at.desc()).first()
+                                    if interview:
+                                        logger.info(f"✅ Found interview by application_id: {application_id}")
                                 
+                                # Generate audio_segments from history for transcript display
+                                audio_segments_data = []
+                                for msg in history:
+                                    role = msg.get("role")
+                                    content = msg.get("content")
+                                    if role and content:
+                                        # Map roles to question/answer
+                                        # interviewer/assistant/model -> question
+                                        # user/candidate -> answer
+                                        segment_type = "question" if role in ["interviewer", "assistant", "model", "system"] else "answer"
+                                        
+                                        audio_segments_data.append({
+                                            "type": segment_type,
+                                            "text": content,
+                                            "timestamp": datetime.now().isoformat(),
+                                            "audio": None
+                                        })
+
                                 if not interview:
                                     # Create new interview record
                                     interview = DBInterview(
@@ -3548,6 +3665,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                         recommendation=recommendation,
                                         evaluation_scores=json.dumps(detailed_scores),
                                         conversation_history=json.dumps(history),
+                                        audio_segments=json.dumps(audio_segments_data),
                                         completed_at=datetime.now()
                                     )
                                     db.add(interview)
@@ -3558,6 +3676,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                     interview.recommendation = recommendation
                                     interview.evaluation_scores = json.dumps(detailed_scores)
                                     interview.conversation_history = json.dumps(history)
+                                    interview.audio_segments = json.dumps(audio_segments_data)
                                     interview.completed_at = datetime.now()
                                 
                                 # Update application if it exists
@@ -4033,7 +4152,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         "that concludes",
                         "we've reached the end",
                         "time is up",
-                        "we're out of time"
+                        "we're out of time",
+                        "hr will review",
+                        "hr team will review",
+                        "contact you soon",
+                        "get back to you",
+                        "good luck"
                     ]
                     response_lower = interviewer_response.lower()
                     is_conclusion = any(phrase in response_lower for phrase in conclusion_phrases)
@@ -4051,6 +4175,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     # If AI concluded and we're in interview phase, auto-generate assessment
                     if is_conclusion and conversation.get_current_phase() == ConversationManager.PHASE_INTERVIEW:
                         logger.info("🎯 AI concluded the interview - auto-generating assessment")
+                        
+                        # Immediately tell frontend to stop listening (before waiting for audio to finish)
+                        await websocket.send_json({
+                            "type": "interview_ending",
+                            "message": "Interview concluded - generating assessment..."
+                        })
                         
                         # Wait for the closing audio to finish playing (typical closing is 10-15 seconds)
                         import asyncio
@@ -4094,11 +4224,38 @@ async def websocket_endpoint(websocket: WebSocket):
                                 cv_text = config.get("candidate_cv_text", "")
                                 
                                 interview = None
-                                if application_id:
+                                
+                                # First, try to find by interview_id from config (this is the record created when interview started)
+                                config_interview_id = config.get("interview_id")
+                                if config_interview_id:
+                                    interview = db.query(DBInterview).filter(
+                                        DBInterview.interview_id == config_interview_id
+                                    ).first()
+                                    if interview:
+                                        logger.info(f"✅ Found interview by config interview_id: {config_interview_id}")
+                                
+                                # Fallback: look up by application_id
+                                if not interview and application_id:
                                     interview = db.query(DBInterview).filter(
                                         DBInterview.application_id == application_id
                                     ).order_by(DBInterview.created_at.desc()).first()
+                                    if interview:
+                                        logger.info(f"✅ Found interview by application_id: {application_id}")
                                 
+                                # Generate audio_segments from history for transcript display
+                                audio_segments_data = []
+                                for msg in history:
+                                    role = msg.get("role")
+                                    content = msg.get("content")
+                                    if role and content:
+                                        segment_type = "question" if role in ["interviewer", "assistant", "model", "system"] else "answer"
+                                        audio_segments_data.append({
+                                            "type": segment_type,
+                                            "text": content,
+                                            "timestamp": datetime.now().isoformat(),
+                                            "audio": None
+                                        })
+
                                 if not interview:
                                     interview = DBInterview(
                                         application_id=application_id,
@@ -4110,6 +4267,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                         recommendation=recommendation,
                                         evaluation_scores=json.dumps(detailed_scores),
                                         conversation_history=json.dumps(history),
+                                        audio_segments=json.dumps(audio_segments_data),
                                         completed_at=datetime.now()
                                     )
                                     db.add(interview)
@@ -4119,6 +4277,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                     interview.recommendation = recommendation
                                     interview.evaluation_scores = json.dumps(detailed_scores)
                                     interview.conversation_history = json.dumps(history)
+                                    interview.audio_segments = json.dumps(audio_segments_data)
                                     interview.completed_at = datetime.now()
                                 
                                 if application_id:

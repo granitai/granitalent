@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { HiArrowPath, HiEye, HiArchiveBox, HiArchiveBoxXMark } from 'react-icons/hi2'
+import { HiArrowPath, HiEye, HiArchiveBox, HiArchiveBoxXMark, HiTrash } from 'react-icons/hi2'
 import { useAuth } from '../../contexts/AuthContext'
 import ApplicationDetailModal from './ApplicationDetailModal'
 import './ApplicationsView.css'
@@ -129,6 +129,19 @@ function ApplicationsView({ viewMode = 'card' }) {
     } catch (error) {
       console.error(`Error ${isArchived ? 'unarchiving' : 'archiving'} application:`, error)
       alert(`Failed to ${isArchived ? 'restore' : 'archive'} application`)
+    }
+  }
+
+  const handleDeleteApplication = async (applicationId) => {
+    if (!window.confirm('Are you sure you want to permanently delete this application? This action cannot be undone.')) {
+      return
+    }
+    try {
+      await authApi.delete(`/admin/applications/${applicationId}`)
+      setApplications(prev => prev.filter(app => app.application_id !== applicationId))
+    } catch (error) {
+      console.error('Error deleting application:', error)
+      alert('Failed to delete application')
     }
   }
 
@@ -329,6 +342,13 @@ function ApplicationsView({ viewMode = 'card' }) {
                     >
                       {app.is_archived ? <HiArchiveBoxXMark className="icon" /> : <HiArchiveBox className="icon" />}
                     </button>
+                    <button
+                      className="delete-btn icon-only"
+                      onClick={() => handleDeleteApplication(app.application_id)}
+                      title="Delete permanently"
+                    >
+                      <HiTrash className="icon" />
+                    </button>
                   </div>
                 </>
               ) : (
@@ -364,6 +384,13 @@ function ApplicationsView({ viewMode = 'card' }) {
                       title={app.is_archived ? 'Restore Application' : 'Archive Application'}
                     >
                       {app.is_archived ? <HiArchiveBoxXMark className="icon" /> : <HiArchiveBox className="icon" />}
+                    </button>
+                    <button
+                      className="delete-btn"
+                      onClick={() => handleDeleteApplication(app.application_id)}
+                      title="Delete permanently"
+                    >
+                      <HiTrash className="icon" />
                     </button>
                   </div>
                 </>

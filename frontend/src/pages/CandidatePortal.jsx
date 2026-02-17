@@ -78,7 +78,7 @@ function CandidatePortal() {
     e.preventDefault()
     e.stopPropagation()
     setDragActive({ ...dragActive, [field]: false })
-    
+
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const file = e.dataTransfer.files[0]
       // Validate file type
@@ -106,13 +106,13 @@ function CandidatePortal() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    
+
     // Custom validation for CV file since the input is hidden
     if (!applicationForm.cv_file) {
       alert('Please upload your CV (PDF)')
       return
     }
-    
+
     setSubmitting(true)
 
     const formData = new FormData()
@@ -160,7 +160,7 @@ function CandidatePortal() {
             <h1>Available Job Opportunities</h1>
             <p>Browse and apply to job offers that match your skills</p>
           </div>
-          <button 
+          <button
             className="dashboard-btn"
             onClick={() => navigate('/dashboard')}
             title="View my applications and interviews"
@@ -221,18 +221,36 @@ function CandidatePortal() {
                       </span>
                     </div>
                   )}
+                  {(() => {
+                    try {
+                      const langs = JSON.parse(offer.required_languages || '[]')
+                      if (langs.length > 0) {
+                        return (
+                          <div className="languages">
+                            <strong>Languages</strong>
+                            <div className="language-tags">
+                              {langs.map((lang, idx) => (
+                                <span key={idx} className="language-tag">{lang}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )
+                      }
+                      return null
+                    } catch { return null }
+                  })()}
                 </div>
               </div>
               <div className="job-offer-card-footer">
                 <div className="card-actions">
-                  <button 
+                  <button
                     className="view-details-btn"
                     onClick={() => handleViewDetails(offer)}
                   >
                     <HiEye className="icon" />
                     <span>View Details</span>
                   </button>
-                  <button 
+                  <button
                     className="apply-btn"
                     onClick={() => handleApply(offer)}
                   >
@@ -251,7 +269,7 @@ function CandidatePortal() {
           <div className="modal-content details-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>{selectedOffer.title}</h2>
-              <button 
+              <button
                 className="close-btn"
                 onClick={() => setShowDetailsModal(false)}
                 aria-label="Close"
@@ -259,7 +277,7 @@ function CandidatePortal() {
                 <HiXMark />
               </button>
             </div>
-            
+
             <div className="offer-details">
               <div className="detail-section">
                 <h3>Job Description</h3>
@@ -287,12 +305,24 @@ function CandidatePortal() {
                 </div>
               )}
 
-              {selectedOffer.required_languages && (
-                <div className="detail-section">
-                  <h3>Required Languages</h3>
-                  <p className="detail-content">{selectedOffer.required_languages}</p>
-                </div>
-              )}
+              {(() => {
+                try {
+                  const langs = JSON.parse(selectedOffer.required_languages || '[]')
+                  if (langs.length > 0) {
+                    return (
+                      <div className="detail-section">
+                        <h3>Required Languages</h3>
+                        <div className="detail-languages">
+                          {langs.map((lang, idx) => (
+                            <span key={idx} className="language-tag">{lang}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  }
+                  return null
+                } catch { return null }
+              })()}
 
               {selectedOffer.created_at && (
                 <div className="detail-section">
@@ -309,14 +339,14 @@ function CandidatePortal() {
             </div>
 
             <div className="modal-actions">
-              <button 
+              <button
                 className="apply-btn"
                 onClick={() => handleApply(selectedOffer)}
               >
                 <HiDocumentArrowUp className="icon" />
                 <span>Apply Now</span>
               </button>
-              <button 
+              <button
                 className="cancel-btn"
                 onClick={() => setShowDetailsModal(false)}
               >
@@ -468,8 +498,8 @@ function CandidatePortal() {
                 <button type="submit" disabled={submitting} className="submit-btn">
                   {submitting ? 'Submitting...' : 'Submit Application'}
                 </button>
-                <button 
-                  type="button" 
+                <button
+                  type="button"
                   onClick={() => setShowApplicationModal(false)}
                   className="cancel-btn"
                 >

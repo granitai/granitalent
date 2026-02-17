@@ -777,6 +777,7 @@ function JobOffersView({ viewMode = 'card' }) {
             <div className="th-cell">Title</div>
             <div className="th-cell">Description</div>
             <div className="th-cell">Skills</div>
+            <div className="th-cell">Languages</div>
             <div className="th-cell">Actions</div>
           </div>
         )}
@@ -795,6 +796,14 @@ function JobOffersView({ viewMode = 'card' }) {
                     {offer.description.substring(0, 100)}...
                   </div>
                   <div className="row-cell">{offer.required_skills || '-'}</div>
+                  <div className="row-cell languages-cell">
+                    {(() => {
+                      try {
+                        const langs = JSON.parse(offer.required_languages || '[]')
+                        return langs.length > 0 ? langs.join(', ') : '-'
+                      } catch { return '-' }
+                    })()}
+                  </div>
                   <div className="row-cell actions-cell">
                     <button className="view-apps-btn icon-only" onClick={() => setSelectedOffer(offer)} title="View Applications">
                       <HiEye className="icon" />
@@ -816,6 +825,24 @@ function JobOffersView({ viewMode = 'card' }) {
                     {offer.required_skills && (
                       <p><strong>Skills:</strong> {offer.required_skills}</p>
                     )}
+                    {(() => {
+                      try {
+                        const langs = JSON.parse(offer.required_languages || '[]')
+                        if (langs.length > 0) {
+                          return (
+                            <div className="card-languages">
+                              <strong>Languages:</strong>
+                              <div className="language-tags">
+                                {langs.map((lang, i) => (
+                                  <span key={i} className="language-tag-display">{lang}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )
+                        }
+                        return null
+                      } catch { return null }
+                    })()}
                   </div>
                   <div className="card-actions">
                     <button className="view-apps-btn" onClick={() => setSelectedOffer(offer)} title="View Applications">
