@@ -30,6 +30,14 @@ Thumbs.db
 *.mp3
 *.ogg
 
+# Video files
+*.webm
+*.mp4
+
+# Uploaded files (videos, audio, user data)
+uploads/
+backend/uploads/
+
 # Frontend
 frontend/node_modules/
 frontend/dist/
