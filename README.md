@@ -269,10 +269,16 @@ npm install
 
 Before using the admin panel, you must create at least one admin user:
 
+**Local development:**
 ```bash
 # From the project root directory (with venv activated)
 cd backend
 python create_admin.py
+```
+
+**Docker deployment (on the server):**
+```bash
+docker exec -it ai-interview-backend python backend/create_admin.py
 ```
 
 You will be prompted to enter:
