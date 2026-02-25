@@ -84,6 +84,10 @@ class Application(Base):
     ai_experience_match = Column(Integer, default=0)
     ai_education_match = Column(Integer, default=0)
     
+    # Structured evaluation results (JSON)
+    language_check_json = Column(Text, nullable=True)  # JSON: {"passed": bool, "languages_found": [...], "languages_missing": [...], "languages_required": [...], "reasoning": "..."}
+    job_fit_check_json = Column(Text, nullable=True)  # JSON: {"status": "...", "score": int, "skills_match": int, "experience_match": int, "education_match": int, "reasoning": "..."}
+    
     # HR Status
     hr_status = Column(String, default="pending")  # "pending", "selected", "rejected", "interview_sent"
     hr_override_reason = Column(Text, default="")

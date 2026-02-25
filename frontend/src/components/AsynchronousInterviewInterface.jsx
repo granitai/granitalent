@@ -189,7 +189,14 @@ function AsynchronousInterviewInterface({ interview, onClose }) {
 
   const startFullInterviewRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 15, max: 20 }
+        }
+      })
       fullInterviewStreamRef.current = stream
 
       // Show video preview
@@ -199,7 +206,8 @@ function AsynchronousInterviewInterface({ interview, onClose }) {
       }
 
       const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp8,opus'
+        mimeType: 'video/webm;codecs=vp8,opus',
+        videoBitsPerSecond: 250000 // Compress to ~250 kbps
       })
       fullInterviewRecorderRef.current = mediaRecorder
       fullInterviewChunksRef.current = []

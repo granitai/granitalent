@@ -218,7 +218,10 @@ NEVER give performance feedback or hints about how well they did.{language_valid
     
     # Generate response
     full_prompt = "\n\n".join(prompt_parts)
-    response = model.generate_content(full_prompt)
+    response = model.generate_content(
+        full_prompt,
+        generation_config=genai.types.GenerationConfig(temperature=0.8)
+    )
     
     # Clean the response
     cleaned = clean_response(response.text)

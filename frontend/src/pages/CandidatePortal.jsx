@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 import { useNavigate } from 'react-router-dom'
-import { HiBriefcase, HiCheckCircle, HiXCircle, HiClock, HiDocumentArrowUp, HiXMark, HiDocumentText, HiEye } from 'react-icons/hi2'
+import { HiBriefcase, HiCheckCircle, HiXCircle, HiClock, HiDocumentArrowUp, HiXMark, HiTrash, HiDocumentText, HiEye } from 'react-icons/hi2'
 import './CandidatePortal.css'
 
 // Utiliser une URL relative qui sera gérée par Nginx en production
@@ -27,6 +27,7 @@ function CandidatePortal() {
   const [submitting, setSubmitting] = useState(false)
   const [successMessage, setSuccessMessage] = useState('')
   const [dragActive, setDragActive] = useState({ cv: false, coverLetter: false })
+  const [fileErrors, setFileErrors] = useState({ cv_file: '', cover_letter_file: '' })
 
   useEffect(() => {
     loadJobOffers()
@@ -54,13 +55,43 @@ function CandidatePortal() {
     setShowApplicationModal(true)
   }
 
+  const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
+
+  const validateFile = (file, field) => {
+    // Check file type
+    if (field === 'cv_file' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setFileErrors(prev => ({ ...prev, [field]: 'Invalid file type. Please upload a PDF file.' }))
+      return false
+    }
+    if (field === 'cover_letter_file') {
+      const ext = file.name.toLowerCase()
+      if (!ext.endsWith('.pdf') && !ext.endsWith('.doc') && !ext.endsWith('.docx')) {
+        setFileErrors(prev => ({ ...prev, [field]: 'Invalid file type. Please upload a PDF, DOC, or DOCX file.' }))
+        return false
+      }
+    }
+    // Check file size
+    if (file.size > MAX_FILE_SIZE) {
+      const sizeMB = (file.size / (1024 * 1024)).toFixed(1)
+      setFileErrors(prev => ({ ...prev, [field]: `File is too large (${sizeMB}MB). Maximum allowed size is 10MB.` }))
+      return false
+    }
+    // Clear any previous error
+    setFileErrors(prev => ({ ...prev, [field]: '' }))
+    return true
+  }
+
   const handleFileChange = (e, field) => {
     const file = e.target.files[0]
     if (file) {
-      setApplicationForm({
-        ...applicationForm,
-        [field]: file
-      })
+      if (validateFile(file, field)) {
+        setApplicationForm({
+          ...applicationForm,
+          [field]: file
+        })
+      } else {
+        e.target.value = ''
+      }
     }
   }
 
@@ -78,22 +109,15 @@ function CandidatePortal() {
     e.preventDefault()
     e.stopPropagation()
     setDragActive({ ...dragActive, [field]: false })
-    
+
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const file = e.dataTransfer.files[0]
-      // Validate file type
-      if (field === 'cv_file' && !file.name.toLowerCase().endsWith('.pdf')) {
-        alert('Please upload a PDF file for CV')
-        return
+      if (validateFile(file, field)) {
+        setApplicationForm({
+          ...applicationForm,
+          [field]: file
+        })
       }
-      if (field === 'cover_letter_file' && !file.name.toLowerCase().endsWith('.pdf') && !file.name.toLowerCase().endsWith('.doc') && !file.name.toLowerCase().endsWith('.docx')) {
-        alert('Please upload a PDF, DOC, or DOCX file for cover letter')
-        return
-      }
-      setApplicationForm({
-        ...applicationForm,
-        [field]: file
-      })
     }
   }
 
@@ -106,13 +130,13 @@ function CandidatePortal() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    
+
     // Custom validation for CV file since the input is hidden
     if (!applicationForm.cv_file) {
       alert('Please upload your CV (PDF)')
       return
     }
-    
+
     setSubmitting(true)
 
     const formData = new FormData()
@@ -160,7 +184,7 @@ function CandidatePortal() {
             <h1>Available Job Opportunities</h1>
             <p>Browse and apply to job offers that match your skills</p>
           </div>
-          <button 
+          <button
             className="dashboard-btn"
             onClick={() => navigate('/dashboard')}
             title="View my applications and interviews"
@@ -225,14 +249,14 @@ function CandidatePortal() {
               </div>
               <div className="job-offer-card-footer">
                 <div className="card-actions">
-                  <button 
+                  <button
                     className="view-details-btn"
                     onClick={() => handleViewDetails(offer)}
                   >
                     <HiEye className="icon" />
                     <span>View Details</span>
                   </button>
-                  <button 
+                  <button
                     className="apply-btn"
                     onClick={() => handleApply(offer)}
                   >
@@ -251,7 +275,7 @@ function CandidatePortal() {
           <div className="modal-content details-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>{selectedOffer.title}</h2>
-              <button 
+              <button
                 className="close-btn"
                 onClick={() => setShowDetailsModal(false)}
                 aria-label="Close"
@@ -259,7 +283,7 @@ function CandidatePortal() {
                 <HiXMark />
               </button>
             </div>
-            
+
             <div className="offer-details">
               <div className="detail-section">
                 <h3>Job Description</h3>
@@ -309,14 +333,14 @@ function CandidatePortal() {
             </div>
 
             <div className="modal-actions">
-              <button 
+              <button
                 className="apply-btn"
                 onClick={() => handleApply(selectedOffer)}
               >
                 <HiDocumentArrowUp className="icon" />
                 <span>Apply Now</span>
               </button>
-              <button 
+              <button
                 className="cancel-btn"
                 onClick={() => setShowDetailsModal(false)}
               >
@@ -406,10 +430,12 @@ function CandidatePortal() {
                           onClick={(e) => {
                             e.preventDefault()
                             setApplicationForm({ ...applicationForm, cover_letter_file: null })
+                            document.getElementById('cover_letter_file').value = ''
+                            setFileErrors(prev => ({ ...prev, cover_letter_file: '' }))
                           }}
                           className="remove-file-btn"
                         >
-                          <HiXMark />
+                          <HiTrash />
                         </button>
                       </>
                     ) : (
@@ -422,6 +448,9 @@ function CandidatePortal() {
                   </label>
                 </div>
               </div>
+              {fileErrors.cover_letter_file && (
+                <p className="file-error-message">{fileErrors.cover_letter_file}</p>
+              )}
               <div className="form-group">
                 <label>CV (PDF) *</label>
                 <div
@@ -448,10 +477,12 @@ function CandidatePortal() {
                           onClick={(e) => {
                             e.preventDefault()
                             setApplicationForm({ ...applicationForm, cv_file: null })
+                            document.getElementById('cv_file').value = ''
+                            setFileErrors(prev => ({ ...prev, cv_file: '' }))
                           }}
                           className="remove-file-btn"
                         >
-                          <HiXMark />
+                          <HiTrash />
                         </button>
                       </>
                     ) : (
@@ -464,12 +495,15 @@ function CandidatePortal() {
                   </label>
                 </div>
               </div>
+              {fileErrors.cv_file && (
+                <p className="file-error-message">{fileErrors.cv_file}</p>
+              )}
               <div className="form-actions">
                 <button type="submit" disabled={submitting} className="submit-btn">
                   {submitting ? 'Submitting...' : 'Submit Application'}
                 </button>
-                <button 
-                  type="button" 
+                <button
+                  type="button"
                   onClick={() => setShowApplicationModal(false)}
                   className="cancel-btn"
                 >
@@ -478,9 +512,10 @@ function CandidatePortal() {
               </div>
             </form>
           </div>
-        </div>
-      )}
-    </div>
+        </div >
+      )
+      }
+    </div >
   )
 }
 

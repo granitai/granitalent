@@ -152,6 +152,8 @@ def migrate_database():
                 'cv_filename': ('TEXT', None),
                 'is_archived': ('INTEGER', '0'),
                 'archived_at': ('DATETIME', None),
+                'language_check_json': ('TEXT', None),
+                'job_fit_check_json': ('TEXT', None),
             }
             
             # Add missing columns

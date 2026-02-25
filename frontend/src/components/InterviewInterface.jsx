@@ -258,7 +258,14 @@ function InterviewInterface({ interview, onClose }) {
   // ========== VIDEO RECORDING FUNCTIONS ==========
   const startFullInterviewRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 15, max: 20 }
+        }
+      })
       fullInterviewStreamRef.current = stream
 
       // Show video preview
@@ -268,7 +275,8 @@ function InterviewInterface({ interview, onClose }) {
       }
 
       const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp8,opus'
+        mimeType: 'video/webm;codecs=vp8,opus',
+        videoBitsPerSecond: 250000 // Compress to ~250 kbps
       })
       fullInterviewRecorderRef.current = mediaRecorder
       fullInterviewChunksRef.current = []
@@ -571,7 +579,7 @@ function InterviewInterface({ interview, onClose }) {
       case 'assessment':
         console.log('📊 Assessment received')
         setAssessment(data.assessment)
-        updateStatus('Interview completed - Assessment generated', 'connected')
+        updateStatus('Interview completed - Saving recording...', 'connected')
         setIsEndingInterview(false)
         // Stop countdown timer
         if (countdownIntervalRef.current) {
@@ -579,6 +587,14 @@ function InterviewInterface({ interview, onClose }) {
           countdownIntervalRef.current = null
         }
         setTimeRemaining(null)
+        // Upload video BEFORE cleaning up resources (which kills the stream)
+        try {
+          await stopFullInterviewRecording()
+          console.log('✅ Video recording saved before cleanup')
+        } catch (err) {
+          console.error('❌ Error saving video recording:', err)
+        }
+        updateStatus('Interview completed - Assessment generated', 'connected')
         cleanupResources()
         break
 

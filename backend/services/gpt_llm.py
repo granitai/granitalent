@@ -256,7 +256,7 @@ RULES:
         response = client.chat.completions.create(
             model=normalized_model,
             messages=messages,
-            temperature=0.7,
+            temperature=0.8,
             max_tokens=300,  # Reduced to encourage concise responses
             top_p=0.9,  # Nucleus sampling for better control
             frequency_penalty=0.3,  # Reduce repetition

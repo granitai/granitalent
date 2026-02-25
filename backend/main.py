@@ -14,6 +14,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Global list of phrases that confidently indicate the AI considers the interview finished.
+# This list is used dynamically across all streaming/audio endpoint handlers.
+CONCLUSION_PHRASES = [
+    "this concludes",
+    "that concludes",
+    "will be processed",
+    "thank you for participating",
+    "thank you for your participation",
+    "reached the end",
+    "time is up",
+    "we are out of time",
+    "we're out of time",
+    "thank you for your time",
+    "thank you for coming",
+    "any questions for me",
+    "questions for me",
+    "do you have any questions",
+    "thank you for this interview",
+    "hr team will review your application",
+    "hr will review your application",
+    "contact you soon",
+    "get back to you soon"
+]
+
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -104,11 +128,13 @@ app.add_middleware(
 # Store active conversations (in production, use Redis or database)
 active_conversations: dict = {}
 
-# Ensure uploads directory exists
-os.makedirs("uploads/videos", exist_ok=True)
+# Ensure uploads directory exists (use absolute path to avoid CWD issues)
+UPLOADS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+VIDEOS_DIR = os.path.join(UPLOADS_DIR, "videos")
+os.makedirs(VIDEOS_DIR, exist_ok=True)
 
 # Mount uploads directory for static file serving
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 # Store session configurations
 session_configs: dict = {}
 # Store active streaming STT sessions
@@ -850,6 +876,8 @@ async def submit_application(
             ai_skills_match=evaluation_result.get("skills_match", 0),
             ai_experience_match=evaluation_result.get("experience_match", 0),
             ai_education_match=evaluation_result.get("education_match", 0),
+            language_check_json=json.dumps(evaluation_result.get("language_check")) if evaluation_result.get("language_check") else None,
+            job_fit_check_json=json.dumps(evaluation_result.get("job_fit_check")) if evaluation_result.get("job_fit_check") else None,
             hr_status="pending"
         )
         db.add(application)
@@ -1251,7 +1279,8 @@ async def list_applications(
             },
             "job_offer": {
                 "offer_id": job_offer.offer_id if job_offer else None,
-                "title": job_offer.title if job_offer else "Unknown"
+                "title": job_offer.title if job_offer else "Unknown",
+                "required_languages": job_offer.required_languages if job_offer else None
             },
             "cover_letter": app.cover_letter,
             "cv_filename": app.cv_filename,
@@ -1300,7 +1329,8 @@ async def get_application_details(application_id: str, db: Session = Depends(get
         "job_offer": {
             "offer_id": job_offer.offer_id if job_offer else None,
             "title": job_offer.title if job_offer else "Unknown",
-            "description": job_offer.description if job_offer else ""
+            "description": job_offer.description if job_offer else "",
+            "required_languages": job_offer.required_languages if job_offer else None
         },
         "cover_letter": application.cover_letter,
         "cv_text": application.cv_text,
@@ -1311,6 +1341,8 @@ async def get_application_details(application_id: str, db: Session = Depends(get
         "ai_skills_match": application.ai_skills_match,
         "ai_experience_match": application.ai_experience_match,
         "ai_education_match": application.ai_education_match,
+        "language_check": json.loads(application.language_check_json) if application.language_check_json else None,
+        "job_fit_check": json.loads(application.job_fit_check_json) if application.job_fit_check_json else None,
         "hr_status": application.hr_status,
         "hr_override_reason": application.hr_override_reason,
         "interview_invited_at": application.interview_invited_at.isoformat() if application.interview_invited_at else None,
@@ -1659,6 +1691,75 @@ async def unarchive_interview(interview_id: str, db: Session = Depends(get_db), 
     
     logger.info(f"📤 Interview unarchived: {interview_id}")
     return {"message": "Interview restored successfully", "is_archived": False}
+
+
+# ============================================================
+# Admin Endpoints - Delete (Permanent)
+# ============================================================
+
+@app.delete("/api/admin/applications/{application_id}")
+async def delete_application(application_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Permanently delete an application and its related interviews."""
+    if db is None:
+        db = next(get_db())
+    
+    application = db.query(DBApplication).filter(DBApplication.application_id == application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    # Delete related interviews first
+    db.query(DBInterview).filter(DBInterview.application_id == application_id).delete()
+    # Delete related CV evaluations
+    db.query(DBCVEvaluation).filter(DBCVEvaluation.application_id == application_id).delete()
+    # Delete the application
+    db.delete(application)
+    db.commit()
+    
+    logger.info(f"🗑️ Application permanently deleted: {application_id}")
+    return {"message": "Application deleted successfully"}
+
+
+@app.delete("/api/admin/interviews/{interview_id}")
+async def delete_interview(interview_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Permanently delete an interview."""
+    if db is None:
+        db = next(get_db())
+    
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    
+    db.delete(interview)
+    db.commit()
+    
+    logger.info(f"🗑️ Interview permanently deleted: {interview_id}")
+    return {"message": "Interview deleted successfully"}
+
+
+@app.delete("/api/admin/candidates/{candidate_id}")
+async def delete_candidate(candidate_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Permanently delete a candidate and all their applications and interviews."""
+    if db is None:
+        db = next(get_db())
+    
+    candidate = db.query(DBCandidate).filter(DBCandidate.candidate_id == candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    
+    # Delete related interviews and CV evaluations for all applications
+    applications = db.query(DBApplication).filter(DBApplication.candidate_id == candidate_id).all()
+    for app in applications:
+        db.query(DBInterview).filter(DBInterview.application_id == app.application_id).delete()
+        db.query(DBCVEvaluation).filter(DBCVEvaluation.application_id == app.application_id).delete()
+    
+    # Delete all applications
+    db.query(DBApplication).filter(DBApplication.candidate_id == candidate_id).delete()
+    # Delete the candidate
+    db.delete(candidate)
+    db.commit()
+    
+    logger.info(f"🗑️ Candidate permanently deleted: {candidate_id}")
+    return {"message": "Candidate and all related data deleted successfully"}
 
 
 # ============================================================
@@ -2394,8 +2495,52 @@ async def submit_async_answer(
         llm_funcs = get_llm_functions(llm_provider)
         logger.info(f"🔧 Final LLM provider before calling get_llm_functions: {llm_provider}")
         
-        # Determine if we should end the interview (after ~5-7 questions)
-        should_end = question_count >= 5
+        # Track tested languages based on AI language switches tracking
+        tested_languages = set()
+        start_language = interview_context.get("interview_start_language", "English")
+        tested_languages.add(start_language)
+        current_language = start_language
+        consecutive_language_questions = 0
+        
+        lang_keywords = {
+            "French": ["français", "francais", "french", "en français", "continuons en français"],
+            "English": ["english", "anglais", "in english", "let's continue in english"],
+            "Arabic": ["arabic", "arabe", "en arabe", "بالعربية"],
+            "Spanish": ["spanish", "espagnol", "español", "en español"],
+            "German": ["german", "allemand", "deutsch", "auf deutsch"]
+        }
+        
+        for msg in conversation_history:
+            if msg["role"] == "assistant":
+                content_lower = msg["content"].lower()
+                switched = False
+                for lang, keywords in lang_keywords.items():
+                    if any(keyword in content_lower for keyword in keywords) and current_language != lang:
+                        tested_languages.add(lang)
+                        current_language = lang
+                        consecutive_language_questions = 1
+                        switched = True
+                        break
+                if not switched:
+                    consecutive_language_questions += 1
+                    
+        all_languages_tested = True
+        if required_languages_list:
+            for req_lang in required_languages_list:
+                if req_lang not in tested_languages:
+                    all_languages_tested = False
+                    break
+                    
+        interview_context["tested_languages"] = list(tested_languages)
+        interview_context["current_language"] = current_language
+        interview_context["questions_in_current_language"] = consecutive_language_questions
+        
+        # Determine if we should end the interview
+        # Enforce minimum 5 questions, prioritize completing required languages
+        if all_languages_tested:
+            should_end = question_count >= 5
+        else:
+            should_end = question_count >= 10  # absolute maximum questions
         
         if should_end:
             # Generate assessment
@@ -2439,6 +2584,27 @@ async def submit_async_answer(
             application.interview_completed_at = datetime.now()
             application.interview_recommendation = recommendation
             
+            # Generate transcript annotations
+            try:
+                if llm_provider == "gpt":
+                    from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
+                    annotations = gpt_generate_transcript_annotations(conversation_history=conversation_history, model_id=llm_model)
+                else:
+                    from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                    annotations = gemini_generate_transcript_annotations(conversation_history=conversation_history, model_id=llm_model)
+                
+                # Update conversation history with annotations
+                for i, msg in enumerate(conversation_history):
+                    if msg["role"] == "user":
+                        idx_str = str(i)
+                        if idx_str in annotations:
+                            msg["ai_comment"] = annotations[idx_str]
+                            
+                # Re-save conversation history with annotations
+                interview.conversation_history = json.dumps(conversation_history)
+            except Exception as e:
+                logger.error(f"❌ Failed to generate or save transcript annotations: {e}")
+            
             db.commit()
             
             logger.info(f"✅ Completed asynchronous interview: {interview_id}")
@@ -2457,6 +2623,11 @@ async def submit_async_answer(
                 model_id=llm_model,
                 interview_context=interview_context
             )
+            
+            # Detect implicit explicit conclusion and strip token before TTS
+            if "[interview_concluded]" in next_question.lower():
+                import re
+                next_question = re.sub(r'\[INTERVIEW_CONCLUDED\]', '', next_question, flags=re.IGNORECASE).strip()
             
             # Generate audio for question
             tts_func = get_tts_function(tts_provider)
@@ -2700,7 +2871,7 @@ async def upload_interview_video(
         if video_file.filename and '.' in video_file.filename:
             file_extension = video_file.filename.split('.')[-1]
             
-        file_path = f"uploads/videos/{interview_id}.{file_extension}"
+        file_path = os.path.join(VIDEOS_DIR, f"{interview_id}.{file_extension}")
         
         # Write file to disk
         with open(file_path, "wb") as buffer:
@@ -2849,6 +3020,30 @@ async def end_async_interview(
     application.interview_recommendation = recommendation
     
     db.commit()
+    
+    # Generate transcript annotations (AI feedback per user message)
+    if conversation_history and len(conversation_history) > 0:
+        try:
+            if llm_provider == "gpt":
+                from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
+                annotations = gpt_generate_transcript_annotations(conversation_history=conversation_history, model_id=llm_model)
+            else:
+                from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                annotations = gemini_generate_transcript_annotations(conversation_history=conversation_history, model_id=llm_model)
+            
+            # Update conversation history with annotations
+            for i, msg in enumerate(conversation_history):
+                if msg["role"] == "user":
+                    idx_str = str(i)
+                    if idx_str in annotations:
+                        msg["ai_comment"] = annotations[idx_str]
+            
+            # Re-save conversation history with annotations
+            interview.conversation_history = json.dumps(conversation_history)
+            db.commit()
+            logger.info(f"✅ Transcript annotations saved for ended async interview: {interview_id}")
+        except Exception as e:
+            logger.error(f"❌ Failed to generate transcript annotations for ended async interview: {e}")
     
     logger.info(f"✅ Marked async interview as completed with assessment: {interview_id}")
     
@@ -3095,17 +3290,18 @@ async def check_and_handle_time_limit(
                     recommendation = extract_recommendation(assessment)
                     detailed_scores = extract_detailed_scores(assessment)
                     
-                    application_id = None
-                    evaluation_id = config.get("evaluation_id")
-                    if evaluation_id:
-                        if evaluation_id in cv_evaluations:
-                            application_id = cv_evaluations[evaluation_id].get("application_id")
-                        if not application_id:
-                            cv_eval = db.query(DBCVEvaluation).filter(
-                                DBCVEvaluation.evaluation_id == evaluation_id
-                            ).first()
-                            if cv_eval:
-                                application_id = cv_eval.application_id
+                    application_id = config.get("application_id")
+                    if not application_id:
+                        evaluation_id = config.get("evaluation_id")
+                        if evaluation_id:
+                            if evaluation_id in cv_evaluations:
+                                application_id = cv_evaluations[evaluation_id].get("application_id")
+                            if not application_id:
+                                cv_eval = db.query(DBCVEvaluation).filter(
+                                    DBCVEvaluation.evaluation_id == evaluation_id
+                                ).first()
+                                if cv_eval:
+                                    application_id = cv_eval.application_id
                     
                     job_offer_id = config.get("job_offer_id")
                     candidate_name = conv.get_candidate_name() or config.get("candidate_name")
@@ -3151,6 +3347,29 @@ async def check_and_handle_time_limit(
                     
                     db.commit()
                     logger.info(f"✅ Time-limited interview assessment stored: interview_id={interview.interview_id}")
+                    
+                    # Generate transcript annotations (AI feedback per user message)
+                    try:
+                        llm_provider_tl = config.get("llm_provider", DEFAULT_LLM_PROVIDER)
+                        llm_model_tl = config.get("llm_model", LLM_PROVIDERS[llm_provider_tl]["default_model"])
+                        if llm_provider_tl == "gpt" or llm_provider_tl == "openai":
+                            from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
+                            annotations = gpt_generate_transcript_annotations(conversation_history=history, model_id=llm_model_tl)
+                        else:
+                            from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                            annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model_tl)
+                        
+                        for i, msg in enumerate(history):
+                            if msg["role"] == "user":
+                                idx_str = str(i)
+                                if idx_str in annotations:
+                                    msg["ai_comment"] = annotations[idx_str]
+                        
+                        interview.conversation_history = json.dumps(history)
+                        db.commit()
+                        logger.info(f"✅ Transcript annotations saved for time-limited interview: {interview.interview_id}")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to generate transcript annotations for time-limited interview: {e}")
                     
                 except Exception as e:
                     logger.error(f"❌ Error storing time-limited interview assessment: {e}")
@@ -3508,21 +3727,21 @@ async def websocket_endpoint(websocket: WebSocket):
                                 recommendation = extract_recommendation(assessment)
                                 detailed_scores = extract_detailed_scores(assessment)
                                 
-                                # Try to find application_id from evaluation_id
-                                application_id = None
-                                evaluation_id = config.get("evaluation_id")
-                                if evaluation_id:
-                                    # Check in-memory first
-                                    if evaluation_id in cv_evaluations:
-                                        application_id = cv_evaluations[evaluation_id].get("application_id")
-                                    
-                                    # Also check database
-                                    if not application_id:
-                                        cv_eval = db.query(DBCVEvaluation).filter(
-                                            DBCVEvaluation.evaluation_id == evaluation_id
-                                        ).first()
-                                        if cv_eval:
-                                            application_id = cv_eval.application_id
+                                application_id = config.get("application_id")
+                                if not application_id:
+                                    evaluation_id = config.get("evaluation_id")
+                                    if evaluation_id:
+                                        # Check in-memory first
+                                        if evaluation_id in cv_evaluations:
+                                            application_id = cv_evaluations[evaluation_id].get("application_id")
+                                        
+                                        # Also check database
+                                        if not application_id:
+                                            cv_eval = db.query(DBCVEvaluation).filter(
+                                                DBCVEvaluation.evaluation_id == evaluation_id
+                                            ).first()
+                                            if cv_eval:
+                                                application_id = cv_eval.application_id
                                 
                                 job_offer_id = config.get("job_offer_id")
                                 candidate_name = conv.get_candidate_name() or config.get("candidate_name")
@@ -3573,6 +3792,29 @@ async def websocket_endpoint(websocket: WebSocket):
                                 
                                 db.commit()
                                 logger.info(f"✅ Interview assessment stored: interview_id={interview.interview_id}, recommendation={recommendation}")
+                                
+                                # Generate transcript annotations (AI feedback per user message)
+                                try:
+                                    llm_provider_rt = config.get("llm_provider", DEFAULT_LLM_PROVIDER)
+                                    llm_model_rt = config.get("llm_model", LLM_PROVIDERS[llm_provider_rt]["default_model"])
+                                    if llm_provider_rt == "gpt" or llm_provider_rt == "openai":
+                                        from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
+                                        annotations = gpt_generate_transcript_annotations(conversation_history=history, model_id=llm_model_rt)
+                                    else:
+                                        from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                        annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model_rt)
+                                    
+                                    for i, msg in enumerate(history):
+                                        if msg["role"] == "user":
+                                            idx_str = str(i)
+                                            if idx_str in annotations:
+                                                msg["ai_comment"] = annotations[idx_str]
+                                    
+                                    interview.conversation_history = json.dumps(history)
+                                    db.commit()
+                                    logger.info(f"✅ Transcript annotations saved for real-time interview: {interview.interview_id}")
+                                except Exception as e:
+                                    logger.error(f"❌ Failed to generate transcript annotations for real-time interview: {e}")
                                 
                             except Exception as e:
                                 logger.error(f"❌ Error storing interview assessment: {e}")
@@ -3797,6 +4039,15 @@ async def websocket_endpoint(websocket: WebSocket):
                         # Increment question count for current language
                         conversation.increment_question_count()
                         
+                        # Detect if AI concluded the interview before stripping the token
+                        response_lower = interviewer_response.lower()
+                        is_conclusion = ("[interview_concluded]" in response_lower) or any(phrase in response_lower for phrase in CONCLUSION_PHRASES)
+                        
+                        # Strip the token so it doesn't get spoken or shown to candidate
+                        if "[interview_concluded]" in response_lower:
+                            import re
+                            interviewer_response = re.sub(r'\[INTERVIEW_CONCLUDED\]', '', interviewer_response, flags=re.IGNORECASE).strip()
+                        
                         # Text to Speech using selected provider
                         tts_func = get_tts_function(config.get("tts_provider", DEFAULT_TTS_PROVIDER))
                         voice_id = get_voice_id(config.get("tts_provider", DEFAULT_TTS_PROVIDER))
@@ -3804,7 +4055,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         
                         tts_start = time.time()
                         try:
-                            if config.get("tts_provider") == "cartesia":
+                            if not interviewer_response.strip():
+                                # Avoid throwing ValueError if AI only responded with conclusion token
+                                response_audio_bytes = b""
+                                audio_format = "mp3"
+                            elif config.get("tts_provider") == "cartesia":
                                 response_audio_bytes = tts_func(interviewer_response, voice_id, tts_model)
                                 audio_format = "wav"
                             else:  # elevenlabs
@@ -3833,8 +4088,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         total_duration = time.time() - total_start
                         logger.info(f"⏱️ TOTAL post-speech processing: {total_duration:.2f}s (LLM: {llm_duration:.2f}s + TTS: {tts_duration:.2f}s)")
                         
+                        # Send the response first
                         response_audio_base64 = base64.b64encode(response_audio_bytes).decode('utf-8')
-                        
                         await websocket.send_json({
                             "type": "response",
                             "user_text": user_text,
@@ -3842,6 +4097,150 @@ async def websocket_endpoint(websocket: WebSocket):
                             "audio": response_audio_base64,
                             "audio_format": audio_format
                         })
+                        
+                        # If AI concluded and we're in interview phase, auto-generate assessment
+                        if is_conclusion and conversation.get_current_phase() == ConversationManager.PHASE_INTERVIEW:
+                            logger.info("🎯 AI concluded the interview - auto-generating assessment")
+                            
+                            # Wait for the closing audio to finish playing (typical closing is 10-15 seconds)
+                            import asyncio
+                            logger.info("⏳ Waiting 12 seconds for closing audio to finish...")
+                            await asyncio.sleep(12)
+                            
+                            # Generate assessment
+                            history = conversation.get_history_for_llm()
+                            interview_context_final = conversation.get_interview_context()
+                            llm_funcs = get_llm_functions(config.get("llm_provider", DEFAULT_LLM_PROVIDER))
+                            
+                            try:
+                                assessment = llm_funcs["generate_assessment"](
+                                    history, 
+                                    model_id=llm_model,
+                                    interview_context=interview_context_final
+                                )
+                                
+                                # Store assessment in database
+                                try:
+                                    db = next(get_db())
+                                    
+                                    recommendation = extract_recommendation(assessment)
+                                    detailed_scores = extract_detailed_scores(assessment)
+                                    
+                                    application_id = config.get("application_id")
+                                    if not application_id:
+                                        evaluation_id = config.get("evaluation_id")
+                                        if evaluation_id:
+                                            if evaluation_id in cv_evaluations:
+                                                application_id = cv_evaluations[evaluation_id].get("application_id")
+                                            if not application_id:
+                                                cv_eval = db.query(DBCVEvaluation).filter(
+                                                    DBCVEvaluation.evaluation_id == evaluation_id
+                                                ).first()
+                                                if cv_eval:
+                                                    application_id = cv_eval.application_id
+                                    
+                                    job_offer_id = config.get("job_offer_id")
+                                    candidate_name = conversation.get_candidate_name() or config.get("candidate_name")
+                                    cv_text = config.get("candidate_cv_text", "")
+                                    
+                                    interview = None
+                                    if application_id:
+                                        interview = db.query(DBInterview).filter(
+                                            DBInterview.application_id == application_id
+                                        ).order_by(DBInterview.created_at.desc()).first()
+                                    
+                                    if not interview:
+                                        interview = DBInterview(
+                                            application_id=application_id,
+                                            job_offer_id=job_offer_id or "",
+                                            candidate_name=candidate_name,
+                                            cv_text=cv_text[:5000] if cv_text else None,
+                                            status="completed",
+                                            assessment=assessment,
+                                            recommendation=recommendation,
+                                            evaluation_scores=json.dumps(detailed_scores),
+                                            conversation_history=json.dumps(history),
+                                            completed_at=datetime.now()
+                                        )
+                                        db.add(interview)
+                                    else:
+                                        interview.status = "completed"
+                                        interview.assessment = assessment
+                                        interview.recommendation = recommendation
+                                        interview.evaluation_scores = json.dumps(detailed_scores)
+                                        interview.conversation_history = json.dumps(history)
+                                        interview.completed_at = datetime.now()
+                                    
+                                    if application_id:
+                                        application = db.query(DBApplication).filter(
+                                            DBApplication.application_id == application_id
+                                        ).first()
+                                        if application:
+                                            application.interview_completed_at = datetime.now()
+                                            application.interview_assessment = assessment
+                                            application.interview_recommendation = recommendation
+                                            application.updated_at = datetime.now()
+                                    
+                                    db.commit()
+                                    logger.info(f"✅ Interview assessment stored: interview_id={interview.interview_id}, recommendation={recommendation}")
+                                    
+                                    # Generate transcript annotations (AI feedback)
+                                    try:
+                                        if config.get("llm_provider", DEFAULT_LLM_PROVIDER) == "gpt":
+                                            from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
+                                            annotations = gpt_generate_transcript_annotations(conversation_history=history, model_id=llm_model)
+                                        else:
+                                            from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                            annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model)
+                                        
+                                        # Update conversation history with annotations
+                                        for i, msg in enumerate(history):
+                                            if msg["role"] == "user":
+                                                idx_str = str(i)
+                                                if idx_str in annotations:
+                                                    msg["ai_comment"] = annotations[idx_str]
+                                        
+                                        interview.conversation_history = json.dumps(history)
+                                        db.commit()
+                                        logger.info("✅ Saved real-time interview transcript annotations")
+                                    except Exception as e:
+                                        logger.error(f"❌ Error generating real-time transcript annotations: {e}")
+                                    
+                                except Exception as e:
+                                    logger.error(f"❌ Error storing interview assessment: {e}")
+                                    db.rollback() if 'db' in locals() else None
+                                
+                                # Send neutral completion message to candidate (no feedback)
+                                await websocket.send_json({
+                                    "type": "assessment",
+                                    "assessment": "**Interview Completed**\n\nThank you for your time! Our HR team will review your application and get back to you soon.\n\nWe appreciate your interest in this position.",
+                                    "interview_completed": True,
+                                    "interview_id": interview.interview_id if 'interview' in locals() and interview else None
+                                })
+                                
+                                # Clean up and close connection
+                                if conversation_id in active_conversations:
+                                    del active_conversations[conversation_id]
+                                if conversation_id in session_configs:
+                                    del session_configs[conversation_id]
+                                if conversation_id in interview_start_times:
+                                    del interview_start_times[conversation_id]
+                                cleanup_dedup_cache(conversation_id)
+                                
+                                logger.info("✅ Interview auto-concluded by AI")
+                                
+                                # Wait additional time before closing to ensure audio finished
+                                logger.info("⏳ Waiting 5 more seconds before closing connection...")
+                                await asyncio.sleep(5)
+                                
+                                # Close WebSocket connection
+                                logger.info(f"🔌 Closing WebSocket connection after AI conclusion")
+                                await websocket.close(code=1000, reason="Interview concluded by AI")
+                                break  # Exit message loop
+                                
+                            except Exception as e:
+                                logger.error(f"❌ Error generating assessment: {e}")
+                                # Continue normally if assessment generation fails
                 
                 # Handle audio message (batch mode - existing)
                 elif data.get("type") == "audio":
@@ -3875,10 +4274,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.info(f"🎤 Processing with STT: {config.get('stt_provider')} / {stt_model}")
                     
                     stt_start = time.time()
-                    if config.get("stt_provider") == "cartesia":
-                        user_text = stt_func(audio_bytes, audio_format="webm", model_id=stt_model)
-                    else:
-                        user_text = stt_func(audio_bytes, model_id=stt_model)
+                    try:
+                        if config.get("stt_provider") == "cartesia":
+                            user_text = stt_func(audio_bytes, audio_format="webm", model_id=stt_model)
+                        else:
+                            user_text = stt_func(audio_bytes, model_id=stt_model)
+                    except Exception as e:
+                        logger.warning(f"⚠️ STT failed to process chunk (likely too short): {e}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Audio chunk too short or unrecognized. Please speak again."
+                        })
+                        continue
+
                     stt_duration = time.time() - stt_start
                     logger.info(f"⏱️ STT took {stt_duration:.2f}s")
                     
@@ -3989,6 +4397,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Increment question count for current language
                     conversation.increment_question_count()
                     
+                    # Detect if AI concluded the interview before stripping the token
+                    response_lower = interviewer_response.lower()
+                    is_conclusion = ("[interview_concluded]" in response_lower) or any(phrase in response_lower for phrase in CONCLUSION_PHRASES)
+                    
+                    # Strip the token so it doesn't get spoken or shown to candidate
+                    if "[interview_concluded]" in response_lower:
+                        import re
+                        interviewer_response = re.sub(r'\[INTERVIEW_CONCLUDED\]', '', interviewer_response, flags=re.IGNORECASE).strip()
+                    
                     # Text to Speech using selected provider
                     tts_func = get_tts_function(config.get("tts_provider", DEFAULT_TTS_PROVIDER))
                     voice_id = get_voice_id(config.get("tts_provider", DEFAULT_TTS_PROVIDER))
@@ -3996,7 +4413,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                     tts_start = time.time()
                     try:
-                        if config.get("tts_provider") == "cartesia":
+                        if not interviewer_response.strip():
+                            # Avoid throwing ValueError if AI only responded with conclusion token
+                            response_audio_bytes = b""
+                            audio_format = "mp3"
+                        elif config.get("tts_provider") == "cartesia":
                             response_audio_bytes = tts_func(interviewer_response, voice_id, tts_model)
                             audio_format = "wav"
                         else:  # elevenlabs
@@ -4021,22 +4442,6 @@ async def websocket_endpoint(websocket: WebSocket):
                             "message": "Text-to-speech service error. Please try again or switch to a different TTS provider."
                         })
                         continue
-                    
-                    # Detect if AI concluded the interview
-                    conclusion_phrases = [
-                        "do you have any questions",
-                        "any questions for me",
-                        "questions for me",
-                        "this concludes our interview",
-                        "thank you for your time",
-                        "thank you for coming",
-                        "that concludes",
-                        "we've reached the end",
-                        "time is up",
-                        "we're out of time"
-                    ]
-                    response_lower = interviewer_response.lower()
-                    is_conclusion = any(phrase in response_lower for phrase in conclusion_phrases)
                     
                     # Send the response first
                     response_audio_base64 = base64.b64encode(response_audio_bytes).decode('utf-8')
@@ -4134,6 +4539,28 @@ async def websocket_endpoint(websocket: WebSocket):
                                 db.commit()
                                 logger.info(f"✅ Interview assessment stored: interview_id={interview.interview_id}, recommendation={recommendation}")
                                 
+                                # Generate transcript annotations (AI feedback)
+                                try:
+                                    if config.get("llm_provider", DEFAULT_LLM_PROVIDER) == "gpt":
+                                        from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
+                                        annotations = gpt_generate_transcript_annotations(conversation_history=history, model_id=llm_model)
+                                    else:
+                                        from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                        annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model)
+                                    
+                                    # Update conversation history with annotations
+                                    for i, msg in enumerate(history):
+                                        if msg["role"] == "user":
+                                            idx_str = str(i)
+                                            if idx_str in annotations:
+                                                msg["ai_comment"] = annotations[idx_str]
+                                    
+                                    interview.conversation_history = json.dumps(history)
+                                    db.commit()
+                                    logger.info("✅ Saved real-time interview transcript annotations")
+                                except Exception as e:
+                                    logger.error(f"❌ Error generating real-time transcript annotations: {e}")
+                                
                             except Exception as e:
                                 logger.error(f"❌ Error storing interview assessment: {e}")
                                 db.rollback() if 'db' in locals() else None
@@ -4209,10 +4636,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     stt_func = get_stt_function(config.get("stt_provider", DEFAULT_STT_PROVIDER))
                     stt_model = config.get("stt_model", STT_PROVIDERS[DEFAULT_STT_PROVIDER]["default_model"])
                     
-                    if config.get("stt_provider") == "cartesia":
-                        user_text = stt_func(audio_bytes, audio_format="webm", model_id=stt_model)
-                    else:
-                        user_text = stt_func(audio_bytes, model_id=stt_model)
+                    try:
+                        if config.get("stt_provider") == "cartesia":
+                            user_text = stt_func(audio_bytes, audio_format="webm", model_id=stt_model)
+                        else:
+                            user_text = stt_func(audio_bytes, model_id=stt_model)
+                    except Exception as e:
+                        logger.warning(f"⚠️ STT failed to process chunk (likely too short): {e}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Audio chunk too short or unrecognized. Please speak again."
+                        })
+                        continue
                     
                     if not user_text.strip():
                         await websocket.send_json({
@@ -4281,13 +4716,26 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Increment question count for current language
                     conversation.increment_question_count()
                     
+                    # Detect if AI concluded the interview before stripping the token
+                    response_lower = interviewer_response.lower()
+                    is_conclusion = ("[interview_concluded]" in response_lower) or any(phrase in response_lower for phrase in CONCLUSION_PHRASES)
+                    
+                    # Strip the token so it doesn't get spoken or shown to candidate
+                    if "[interview_concluded]" in response_lower:
+                        import re
+                        interviewer_response = re.sub(r'\[INTERVIEW_CONCLUDED\]', '', interviewer_response, flags=re.IGNORECASE).strip()
+                    
                     # Text to Speech using selected provider
                     tts_func = get_tts_function(config.get("tts_provider", DEFAULT_TTS_PROVIDER))
                     voice_id = get_voice_id(config.get("tts_provider", DEFAULT_TTS_PROVIDER))
                     tts_model = config.get("tts_model")
                     
                     try:
-                        if config.get("tts_provider") == "cartesia":
+                        if not interviewer_response.strip():
+                            # Avoid throwing ValueError if AI only responded with conclusion token
+                            response_audio_bytes = b""
+                            audio_format = "mp3"
+                        elif config.get("tts_provider") == "cartesia":
                             response_audio_bytes = tts_func(interviewer_response, voice_id, tts_model)
                             audio_format = "wav"
                         else:  # elevenlabs
@@ -4311,8 +4759,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         })
                         continue
                     
+                    # Send the response first
                     response_audio_base64 = base64.b64encode(response_audio_bytes).decode('utf-8')
-                    
                     await websocket.send_json({
                         "type": "response",
                         "user_text": user_text,
@@ -4320,6 +4768,150 @@ async def websocket_endpoint(websocket: WebSocket):
                         "audio": response_audio_base64,
                         "audio_format": audio_format
                     })
+                    
+                    # If AI concluded and we're in interview phase, auto-generate assessment
+                    if is_conclusion and conversation.get_current_phase() == ConversationManager.PHASE_INTERVIEW:
+                        logger.info("🎯 AI concluded the interview - auto-generating assessment")
+                        
+                        # Wait for the closing audio to finish playing (typical closing is 10-15 seconds)
+                        import asyncio
+                        logger.info("⏳ Waiting 12 seconds for closing audio to finish...")
+                        await asyncio.sleep(12)
+                        
+                        # Generate assessment
+                        history = conversation.get_history_for_llm()
+                        interview_context_final = conversation.get_interview_context()
+                        llm_funcs = get_llm_functions(config.get("llm_provider", DEFAULT_LLM_PROVIDER))
+                        
+                        try:
+                            assessment = llm_funcs["generate_assessment"](
+                                history, 
+                                model_id=llm_model,
+                                interview_context=interview_context_final
+                            )
+                            
+                            # Store assessment in database
+                            try:
+                                db = next(get_db())
+                                
+                                recommendation = extract_recommendation(assessment)
+                                detailed_scores = extract_detailed_scores(assessment)
+                                
+                                application_id = config.get("application_id")
+                                if not application_id:
+                                    evaluation_id = config.get("evaluation_id")
+                                    if evaluation_id:
+                                        if evaluation_id in cv_evaluations:
+                                            application_id = cv_evaluations[evaluation_id].get("application_id")
+                                        if not application_id:
+                                            cv_eval = db.query(DBCVEvaluation).filter(
+                                                DBCVEvaluation.evaluation_id == evaluation_id
+                                            ).first()
+                                            if cv_eval:
+                                                application_id = cv_eval.application_id
+                                
+                                job_offer_id = config.get("job_offer_id")
+                                candidate_name = conversation.get_candidate_name() or config.get("candidate_name")
+                                cv_text = config.get("candidate_cv_text", "")
+                                
+                                interview = None
+                                if application_id:
+                                    interview = db.query(DBInterview).filter(
+                                        DBInterview.application_id == application_id
+                                    ).order_by(DBInterview.created_at.desc()).first()
+                                
+                                if not interview:
+                                    interview = DBInterview(
+                                        application_id=application_id,
+                                        job_offer_id=job_offer_id or "",
+                                        candidate_name=candidate_name,
+                                        cv_text=cv_text[:5000] if cv_text else None,
+                                        status="completed",
+                                        assessment=assessment,
+                                        recommendation=recommendation,
+                                        evaluation_scores=json.dumps(detailed_scores),
+                                        conversation_history=json.dumps(history),
+                                        completed_at=datetime.now()
+                                    )
+                                    db.add(interview)
+                                else:
+                                    interview.status = "completed"
+                                    interview.assessment = assessment
+                                    interview.recommendation = recommendation
+                                    interview.evaluation_scores = json.dumps(detailed_scores)
+                                    interview.conversation_history = json.dumps(history)
+                                    interview.completed_at = datetime.now()
+                                
+                                if application_id:
+                                    application = db.query(DBApplication).filter(
+                                        DBApplication.application_id == application_id
+                                    ).first()
+                                    if application:
+                                        application.interview_completed_at = datetime.now()
+                                        application.interview_assessment = assessment
+                                        application.interview_recommendation = recommendation
+                                        application.updated_at = datetime.now()
+                                
+                                db.commit()
+                                logger.info(f"✅ Interview assessment stored: interview_id={interview.interview_id}, recommendation={recommendation}")
+                                
+                                # Generate transcript annotations (AI feedback)
+                                try:
+                                    if config.get("llm_provider", DEFAULT_LLM_PROVIDER) == "gpt":
+                                        from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
+                                        annotations = gpt_generate_transcript_annotations(conversation_history=history, model_id=llm_model)
+                                    else:
+                                        from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                        annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model)
+                                    
+                                    # Update conversation history with annotations
+                                    for i, msg in enumerate(history):
+                                        if msg["role"] == "user":
+                                            idx_str = str(i)
+                                            if idx_str in annotations:
+                                                msg["ai_comment"] = annotations[idx_str]
+                                    
+                                    interview.conversation_history = json.dumps(history)
+                                    db.commit()
+                                    logger.info("✅ Saved real-time interview transcript annotations")
+                                except Exception as e:
+                                    logger.error(f"❌ Error generating real-time transcript annotations: {e}")
+                                
+                            except Exception as e:
+                                logger.error(f"❌ Error storing interview assessment: {e}")
+                                db.rollback() if 'db' in locals() else None
+                            
+                            # Send neutral completion message to candidate (no feedback)
+                            await websocket.send_json({
+                                "type": "assessment",
+                                "assessment": "**Interview Completed**\n\nThank you for your time! Our HR team will review your application and get back to you soon.\n\nWe appreciate your interest in this position.",
+                                "interview_completed": True,
+                                "interview_id": interview.interview_id if 'interview' in locals() and interview else None
+                            })
+                            
+                            # Clean up and close connection
+                            if conversation_id in active_conversations:
+                                del active_conversations[conversation_id]
+                            if conversation_id in session_configs:
+                                del session_configs[conversation_id]
+                            if conversation_id in interview_start_times:
+                                del interview_start_times[conversation_id]
+                            cleanup_dedup_cache(conversation_id)
+                            
+                            logger.info("✅ Interview auto-concluded by AI")
+                            
+                            # Wait additional time before closing to ensure audio finished
+                            logger.info("⏳ Waiting 5 more seconds before closing connection...")
+                            await asyncio.sleep(5)
+                            
+                            # Close WebSocket connection
+                            logger.info(f"🔌 Closing WebSocket connection after AI conclusion")
+                            await websocket.close(code=1000, reason="Interview concluded by AI")
+                            break  # Exit message loop
+                            
+                        except Exception as e:
+                            logger.error(f"❌ Error generating assessment: {e}")
+                            # Continue normally if assessment generation fails
     
     except WebSocketDisconnect:
         # Clean up conversation if needed

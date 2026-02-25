@@ -57,6 +57,7 @@ def speech_to_text(audio_bytes: bytes, audio_format: str = "webm", model_id: Opt
             client = get_client()
             # Wrap audio bytes in BytesIO for the API (fresh copy for each attempt)
             audio_file = BytesIO(audio_bytes)
+            audio_file.name = f"audio.{audio_format}"
             
             # Transcribe audio using the official library
             result = client.speech_to_text.convert(

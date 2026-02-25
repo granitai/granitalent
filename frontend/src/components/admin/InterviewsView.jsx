@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { HiArrowPath, HiEye, HiXMark, HiChatBubbleLeftRight, HiDocumentText, HiUser, HiCpuChip, HiSpeakerWave, HiArchiveBox, HiArchiveBoxXMark } from 'react-icons/hi2'
+import { HiArrowPath, HiEye, HiXMark, HiChatBubbleLeftRight, HiDocumentText, HiUser, HiCpuChip, HiSpeakerWave, HiArchiveBox, HiArchiveBoxXMark, HiSparkles, HiTrash } from 'react-icons/hi2'
 import { useAuth } from '../../contexts/AuthContext'
 import './InterviewsView.css'
 
@@ -91,6 +91,17 @@ function InterviewsView({ viewMode = 'card' }) {
     } catch (error) {
       console.error(`Error ${isArchived ? 'unarchiving' : 'archiving'} interview:`, error)
       alert(`Failed to ${isArchived ? 'restore' : 'archive'} interview`)
+    }
+  }
+
+  const handleDeleteInterview = async (interviewId) => {
+    if (!confirm('Are you sure you want to permanently delete this interview? This action cannot be undone.')) return
+    try {
+      await authApi.delete(`/admin/interviews/${interviewId}`)
+      setInterviews(prev => prev.filter(interview => interview.interview_id !== interviewId))
+    } catch (error) {
+      console.error('Error deleting interview:', error)
+      alert('Failed to delete interview')
     }
   }
 
@@ -230,40 +241,187 @@ function InterviewsView({ viewMode = 'card' }) {
 
   const formatAssessment = (assessment) => {
     if (!assessment) return null
-    // Convert markdown-like formatting to HTML
-    let formatted = assessment
-      // Headers (must be done before other replacements)
-      .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-      .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-      .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-      // Bold (**text** -> <strong>text</strong>) - must be before italic
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      // Lists (- item -> <li>item</li>)
-      .replace(/^- (.*$)/gim, '<li>$1</li>')
-      // Numbered lists (1. item -> <li>item</li>)
-      .replace(/^\d+\. (.*$)/gim, '<li>$1</li>')
-      // Line breaks
-      .replace(/\n/g, '<br>')
 
-    // Wrap consecutive <li> tags in <ul>
-    const lines = formatted.split('<br>')
-    let inList = false
-    formatted = lines.map((line, idx) => {
-      const isListItem = line.trim().startsWith('<li>')
-      const prevIsListItem = idx > 0 && lines[idx - 1].trim().startsWith('<li>')
-      const nextIsListItem = idx < lines.length - 1 && lines[idx + 1].trim().startsWith('<li>')
+    const lines = assessment.split('\n')
+    const blocks = []
+    let currentBlock = { type: 'paragraph', lines: [] }
 
-      if (isListItem && !prevIsListItem) {
-        inList = true
-        return '<ul>' + line
-      } else if (isListItem && !nextIsListItem) {
-        inList = false
-        return line + '</ul>'
+    const flushText = () => {
+      if (currentBlock.lines.length > 0) {
+        blocks.push({ type: 'paragraph', text: currentBlock.lines.join(' ') })
+        currentBlock.lines = []
       }
-      return line
-    }).join('<br>')
+    }
 
-    return formatted
+    // Standardize emoji and markdown stripping
+    const stripDebris = (str) => {
+      return str
+        .replace(/[\u{1F300}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1FA70}-\u{1FAFF}\u{1F1E6}-\u{1F1FF}⭐🤖✅❌⚠️📝🎯💪📈ℹ️📋]/gu, '')
+        .trim()
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i].trim()
+      if (!line || line === '---' || line.match(/^_{3,}$/)) {
+        flushText()
+        continue
+      }
+
+      line = stripDebris(line)
+      if (!line) continue
+
+      // Main Title
+      if (line.match(/^##\s+(.+)/)) {
+        flushText()
+        blocks.push({ type: 'main-title', text: line.replace(/^##\s+/, '').replace(/\*\*/g, '').trim() })
+        continue
+      }
+
+      // Language Section divider
+      if (line.match(/^###\s+(.+)/)) {
+        flushText()
+        blocks.push({ type: 'language-title', text: line.replace(/^###\s+/, '').replace(/\*\*/g, '').trim() })
+        continue
+      }
+
+      // Stats line (CEFR / Score)
+      const statsMatch = line.match(/(?:\*\*|)CEFR Level:(?:\*\*|)\s*(.+?)\s*\|\s*(?:\*\*|)Score:(?:\*\*|)\s*(.+?)(?:\/10)?$/i)
+      if (statsMatch) {
+        flushText()
+        blocks.push({ type: 'stats', level: statsMatch[1].replace(/\*\*/g, '').trim(), score: statsMatch[2].replace(/\*\*/g, '').trim() })
+        continue
+      }
+
+      // Sub-headers that are just bolded lines
+      if (line.match(/^\*\*[^*]+\*\*$/) || line.match(/^[-•]?\s*\*\*[^*]+\*\*\s*$/)) {
+        flushText()
+        let text = line.replace(/^[-•]\s*/, '').replace(/\*\*/g, '').trim()
+        blocks.push({ type: 'sub-header', text })
+        continue
+      }
+
+      // Examples sections: Look for inline bolded Example
+      const exampleMatch = line.match(/^[-•]?\s*\*\*(Example\s*\d*(?:.*)?)\*\*\s*[-:—–]?\s*(.*)/i)
+      if (exampleMatch) {
+        flushText()
+        let exampleText = exampleMatch[2]
+        // Gather analysis lines
+        let analysisLines = []
+        for (let j = i + 1; j < lines.length; j++) {
+          let nextLine = lines[j].trim()
+          if (!nextLine) {
+            // allow 1 blank line in example
+            if (j + 1 < lines.length && lines[j + 1].trim()) continue;
+            else break;
+          }
+          nextLine = stripDebris(nextLine)
+          if (nextLine.match(/^\*\*/) || nextLine.match(/^[-•]\s*\*\*/)) break
+          if (nextLine.match(/^###/)) break
+          analysisLines.push(nextLine)
+          i = j
+        }
+
+        // Clean quote
+        exampleText = exampleText.replace(/The candidate said:\s*/i, '').replace(/^[>"]+/, '').replace(/["]+$/, '')
+          .replace(/\*\*/g, '').trim()
+
+        // Clean analysis
+        let analysis = analysisLines.join(' ')
+          .replace(/^[→\->►]+\s*/, '')
+          .replace(/\[Analysis.*?\]/i, '')
+          .replace(/\*\*/g, '')
+          .replace(/^Analysis:\s*/i, '').trim()
+
+        blocks.push({ type: 'example', quote: exampleText, analysis })
+        continue
+      }
+
+      // Inline subheaders (e.g. "**Technical Skills** (7/10) - text")
+      const inlineHeaderMatch = line.match(/^[-•]?\s*\*\*([^*]+)\*\*\s*[-:—–]?\s*(.+)/)
+      if (inlineHeaderMatch && !line.match(/\*\*CEFR Level/i)) {
+        flushText()
+        blocks.push({ type: 'sub-header', text: inlineHeaderMatch[1].replace(/\*\*/g, '').trim() })
+        currentBlock.lines.push(inlineHeaderMatch[2].replace(/\*\*/g, '').replace(/^[→\->►]+\s*/, '').trim())
+        continue
+      }
+
+      // Not tested catch
+      if (line.toUpperCase().includes('NOT TESTED') && line.toUpperCase().includes('NO EVALUATION')) {
+        flushText()
+        blocks.push({ type: 'not-tested', text: 'NOT TESTED — No evaluation possible' })
+        continue
+      }
+
+      // Regular paragraph line
+      let cleanL = line
+        .replace(/\*\*/g, '')
+        .replace(/^[>\-•→►]\s*/, '')
+        .trim()
+
+      if (cleanL) {
+        currentBlock.lines.push(cleanL)
+      }
+    }
+
+    flushText()
+
+    return (
+      <div className="report-document">
+        {blocks.map((block, idx) => {
+          if (block.type === 'main-title') {
+            return <h2 key={idx} className="report-main-title">{block.text}</h2>
+          }
+          if (block.type === 'language-title') {
+            return (
+              <div key={idx} className="report-language-divider">
+                <span className="report-language-name">{block.text}</span>
+              </div>
+            )
+          }
+          if (block.type === 'not-tested') {
+            return <div key={idx} className="report-not-tested">{block.text}</div>
+          }
+          if (block.type === 'stats') {
+            return (
+              <div key={idx} className="report-stats-row">
+                <div className="report-stat">
+                  <span className="stat-label">CEFR Level</span>
+                  <span className="stat-value">{block.level}</span>
+                </div>
+                <div className="report-stat divider"></div>
+                <div className="report-stat">
+                  <span className="stat-label">Score</span>
+                  <span className="stat-value">{block.score}/10</span>
+                </div>
+              </div>
+            )
+          }
+          if (block.type === 'sub-header') {
+            return <h4 key={idx} className="report-sub-title">{block.text}</h4>
+          }
+          if (block.type === 'example') {
+            return (
+              <div key={idx} className="report-example-block">
+                {block.quote && (
+                  <div className="example-quote">
+                    <span className="quote-label">Candidate:</span> "{block.quote}"
+                  </div>
+                )}
+                {block.analysis && (
+                  <div className="example-analysis">
+                    <span className="analysis-label">Analysis:</span> {block.analysis}
+                  </div>
+                )}
+              </div>
+            )
+          }
+          if (block.type === 'paragraph') {
+            return <p key={idx} className="report-paragraph">{block.text}</p>
+          }
+          return null
+        })}
+      </div>
+    )
   }
 
   if (loading) {
@@ -418,6 +576,13 @@ function InterviewsView({ viewMode = 'card' }) {
                     >
                       {interview.is_archived ? <HiArchiveBoxXMark className="icon" /> : <HiArchiveBox className="icon" />}
                     </button>
+                    <button
+                      className="delete-btn icon-only"
+                      onClick={() => handleDeleteInterview(interview.interview_id)}
+                      title="Delete"
+                    >
+                      <HiTrash className="icon" />
+                    </button>
                   </div>
                 </>
               ) : (
@@ -456,6 +621,13 @@ function InterviewsView({ viewMode = 'card' }) {
                       title={interview.is_archived ? 'Restore Interview' : 'Archive Interview'}
                     >
                       {interview.is_archived ? <HiArchiveBoxXMark className="icon" /> : <HiArchiveBox className="icon" />}
+                    </button>
+                    <button
+                      className="delete-btn"
+                      onClick={() => handleDeleteInterview(interview.interview_id)}
+                      title="Delete Interview"
+                    >
+                      <HiTrash className="icon" />
                     </button>
                   </div>
                 </>
@@ -544,10 +716,7 @@ function InterviewsView({ viewMode = 'card' }) {
                   <div className="assessment-tab">
                     {selectedInterview.assessment ? (
                       <div className="assessment-content">
-                        <div
-                          className="assessment-text"
-                          dangerouslySetInnerHTML={{ __html: formatAssessment(selectedInterview.assessment) }}
-                        />
+                        {formatAssessment(selectedInterview.assessment)}
                       </div>
                     ) : (
                       <div className="empty-state">
@@ -583,6 +752,18 @@ function InterviewsView({ viewMode = 'card' }) {
                             <div className="message-body">
                               {message.content}
                             </div>
+
+                            {message.role === 'user' && message.ai_comment && (
+                              <div className="message-ai-comment">
+                                <div className="comment-header">
+                                  <HiSparkles className="comment-icon" />
+                                  <span>AI Feedback</span>
+                                </div>
+                                <div className="comment-body">
+                                  {message.ai_comment}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>

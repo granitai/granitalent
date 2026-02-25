@@ -116,7 +116,7 @@ def generate_response(
     response = client.chat.completions.create(
         model=model_id,
         messages=messages,
-        temperature=0.7,
+        temperature=0.8,
         max_tokens=500
     )
     
@@ -275,3 +275,53 @@ def generate_assessment(
     )
     
     return response.choices[0].message.content.strip()
+
+
+def generate_transcript_annotations(
+    conversation_history: List[Dict[str, str]],
+    model_id: Optional[str] = None
+) -> Dict[str, str]:
+    """
+    Generate language feedback for each of the candidate's messages in the transcript.
+    
+    Args:
+        conversation_history: The full conversation history
+        model_id: The GPT model to use
+    
+    Returns:
+        A dictionary mapping the message index (as string) to the AI's feedback.
+    """
+    if model_id is None:
+        model_id = DEFAULT_GPT_MODEL
+    
+    model_id = _normalize_model(model_id)
+    logger.info(f"🌐 Language LLM (GPT): Generating transcript language annotations")
+    
+    # Build transcript with indices
+    transcript = []
+    for i, msg in enumerate(conversation_history):
+        role = "Evaluator" if msg["role"] == "assistant" else "Candidate"
+        transcript.append(f"[{i}] {role}: {msg['content']}")
+        
+    transcript_text = "\n".join(transcript)
+    
+    from backend.services.language_prompts import build_transcript_annotation_prompt
+    prompt = build_transcript_annotation_prompt(conversation_transcript=transcript_text)
+    
+    client = _get_client()
+    
+    try:
+        response = client.chat.completions.create(
+            model=model_id,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=2000,
+            response_format={"type": "json_object"}
+        )
+        
+        content = response.choices[0].message.content.strip()
+        annotations = json.loads(content)
+        return annotations
+    except Exception as e:
+        logger.error(f"❌ Error generating transcript annotations: {e}")
+        return {}

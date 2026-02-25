@@ -161,11 +161,11 @@
 }
 
 .card-actions {
-  display: grid !important;
-  grid-template-columns: 1fr 40px;
+  display: flex !important;
+  flex-direction: row;
+  flex-wrap: nowrap;
   gap: 0.75rem;
   align-items: stretch;
-  /* Force both children to same height */
   margin-top: auto;
   padding-top: 1rem;
   width: 100%;
@@ -233,8 +233,8 @@
   transition: all 0.2s;
   font-family: inherit;
   font-size: 0.95rem;
-  flex-shrink: 0;
-  width: 100%;
+  flex: 1 1 0;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

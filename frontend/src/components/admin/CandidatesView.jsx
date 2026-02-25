@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { HiMagnifyingGlass, HiEye, HiXMark } from 'react-icons/hi2'
+import { HiMagnifyingGlass, HiEye, HiXMark, HiTrash } from 'react-icons/hi2'
 import { useAuth } from '../../contexts/AuthContext'
 import './CandidatesView.css'
 
@@ -37,6 +37,17 @@ function CandidatesView({ viewMode = 'card' }) {
     } catch (error) {
       console.error('Error loading candidate details:', error)
       alert('Error loading candidate details')
+    }
+  }
+
+  const handleDeleteCandidate = async (candidateId) => {
+    if (!confirm('Are you sure you want to permanently delete this candidate and ALL their applications and interviews? This action cannot be undone.')) return
+    try {
+      await authApi.delete(`/admin/candidates/${candidateId}`)
+      setCandidates(prev => prev.filter(c => c.candidate_id !== candidateId))
+    } catch (error) {
+      console.error('Error deleting candidate:', error)
+      alert('Failed to delete candidate')
     }
   }
 
@@ -95,6 +106,13 @@ function CandidatesView({ viewMode = 'card' }) {
                     >
                       View All Applications
                     </button>
+                    <button
+                      className="delete-btn icon-only"
+                      onClick={() => handleDeleteCandidate(candidate.candidate_id)}
+                      title="Delete Candidate"
+                    >
+                      <HiTrash className="icon" />
+                    </button>
                   </div>
                 </>
               ) : (
@@ -117,6 +135,13 @@ function CandidatesView({ viewMode = 'card' }) {
                       onClick={() => handleViewCandidate(candidate.email)}
                     >
                       View All Applications
+                    </button>
+                    <button
+                      className="delete-btn"
+                      onClick={() => handleDeleteCandidate(candidate.candidate_id)}
+                      title="Delete Candidate"
+                    >
+                      <HiTrash className="icon" />
                     </button>
                   </div>
                 </>

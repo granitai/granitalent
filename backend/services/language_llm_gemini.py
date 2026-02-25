@@ -116,7 +116,10 @@ def generate_response(
     
     # Generate response
     full_prompt = "\n\n".join(prompt_parts)
-    response = model.generate_content(full_prompt)
+    response = model.generate_content(
+        full_prompt,
+        generation_config=genai.types.GenerationConfig(temperature=0.8)
+    )
     
     cleaned = clean_response(response.text)
     logger.info(f"🌐 Language LLM response: '{cleaned[:50]}...'")
@@ -245,3 +248,53 @@ def generate_assessment(
     response = model.generate_content(prompt)
     
     return response.text.strip()
+
+
+def generate_transcript_annotations(
+    conversation_history: List[Dict[str, str]],
+    model_id: Optional[str] = None
+) -> Dict[str, str]:
+    """
+    Generate language feedback for each of the candidate's messages in the transcript.
+    
+    Args:
+        conversation_history: The full conversation history
+        model_id: The Gemini model to use
+    
+    Returns:
+        A dictionary mapping the message index (as string) to the AI's feedback.
+    """
+    if model_id is None:
+        model_id = DEFAULT_LLM_MODEL
+    
+    logger.info(f"🌐 Language LLM (Gemini): Generating transcript language annotations")
+    
+    # Build transcript with indices
+    transcript = []
+    for i, msg in enumerate(conversation_history):
+        role = "Evaluator" if msg["role"] == "assistant" else "Candidate"
+        transcript.append(f"[{i}] {role}: {msg['content']}")
+        
+    transcript_text = "\n".join(transcript)
+    
+    from backend.services.language_prompts import build_transcript_annotation_prompt
+    prompt = build_transcript_annotation_prompt(conversation_transcript=transcript_text)
+    
+    model = genai.GenerativeModel(model_id)
+    
+    try:
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.3,
+                max_output_tokens=2000,
+                response_mime_type="application/json"
+            )
+        )
+        
+        content = response.text.strip()
+        annotations = json.loads(content)
+        return annotations
+    except Exception as e:
+        logger.error(f"❌ Error generating transcript annotations: {e}")
+        return {}

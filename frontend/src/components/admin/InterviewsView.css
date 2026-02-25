@@ -467,22 +467,173 @@
   overflow-y: auto;
 }
 
-/* Assessment Tab */
+/* Assessment Tab - Formal Document Report */
 .assessment-content {
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+
+.report-document {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 3rem 4rem;
+  background: white;
+  border-radius: 4px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+  font-family: 'Inter', -apple-system, sans-serif;
+  color: #333;
+}
+
+.report-main-title {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: #1a1a1a;
+  text-align: center;
+  margin-bottom: 2rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-bottom: 1rem;
+  border-bottom: 2px solid #eaeaea;
+}
+
+.report-language-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 3.5rem 0 2rem 0;
+  position: relative;
+}
+
+.report-language-divider::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: #eaeaea;
+  z-index: 1;
+}
+
+.report-language-name {
+  background: white;
+  padding: 0 1.5rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #1a1a1a;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  position: relative;
+  z-index: 2;
+}
+
+.report-stats-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 2.5rem;
+  margin-bottom: 2.5rem;
   padding: 1.5rem;
-  background: var(--bg-input);
-  border-radius: 10px;
-  border: 1px solid var(--border);
+  background: #fdfdfd;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
 }
 
-.assessment-text {
-  color: var(--text-secondary);
-  line-height: 1.8;
+.report-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.report-stat.divider {
+  width: 1px;
+  height: 40px;
+  background: #eaeaea;
+}
+
+.stat-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #666;
+  font-weight: 600;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #1a1a1a;
+}
+
+.report-sub-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin: 2rem 0 1rem 0;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.report-paragraph {
   font-size: 0.95rem;
+  line-height: 1.7;
+  color: #444;
+  margin: 0 0 1rem 0;
 }
 
-.assessment-text strong {
-  color: var(--text-primary);
+.report-example-block {
+  margin: 1.25rem 0;
+  padding: 1rem 1.5rem;
+  border-left: 3px solid #e0e0e0;
+  background: #fafafa;
+}
+
+.example-quote {
+  font-size: 0.95rem;
+  font-style: italic;
+  color: #222;
+  margin-bottom: 0.75rem;
+}
+
+.quote-label {
+  font-weight: 600;
+  font-style: normal;
+  color: #666;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  margin-right: 0.5rem;
+}
+
+.example-analysis {
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: #444;
+}
+
+.analysis-label {
+  font-weight: 600;
+  color: #666;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  margin-right: 0.5rem;
+}
+
+.report-not-tested {
+  text-align: center;
+  font-style: italic;
+  color: #888;
+  padding: 2rem;
+  background: #fcfcfc;
+  border: 1px dashed #e0e0e0;
+  border-radius: 4px;
+}
+
+@media (max-width: 768px) {
+  .report-document {
+    padding: 2rem 1.5rem;
+  }
 }
 
 /* Transcript Tab */
@@ -545,6 +696,40 @@
   line-height: 1.6;
   font-size: 0.95rem;
   padding-left: 1.5rem;
+}
+
+.message-ai-comment {
+  margin-top: 0.5rem;
+  margin-left: 1.5rem;
+  padding: 0.6rem 0.85rem;
+  background: rgba(220, 53, 69, 0.06);
+  border-left: 3px solid rgba(220, 53, 69, 0.6);
+  border-radius: 0 8px 8px 0;
+  font-size: 0.85rem;
+}
+
+.comment-header {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.2rem;
+  color: #dc3545;
+  font-weight: 700;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.comment-icon {
+  font-size: 0.85rem;
+  color: #dc3545;
+}
+
+.comment-body {
+  color: #a94442;
+  line-height: 1.45;
+  font-size: 0.85rem;
+  white-space: pre-line;
 }
 
 /* Empty State */
