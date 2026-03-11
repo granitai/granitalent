@@ -11,17 +11,23 @@ from backend.config import ELEVENLABS_API_KEY, STT_MODEL
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Don't initialize client at module level - create it dynamically to always use current API key
+# Cached client instance for performance (avoid recreating on every call)
+_cached_client = None
+_cached_api_key = None
+
 def get_client():
-    """Get ElevenLabs client with current API key (reloads from .env file)."""
+    """Get ElevenLabs client, reusing cached instance when API key hasn't changed."""
+    global _cached_client, _cached_api_key
     from dotenv import load_dotenv
     import os
-    # Reload .env file to get latest API key
-    load_dotenv(override=True)  # override=True ensures new values replace old ones
+    load_dotenv(override=True)
     api_key = os.getenv("ELEVENLABS_API_KEY")
     if not api_key:
         raise ValueError("ELEVENLABS_API_KEY not found in environment variables. Please check your .env file.")
-    return ElevenLabs(api_key=api_key)
+    if _cached_client is None or api_key != _cached_api_key:
+        _cached_client = ElevenLabs(api_key=api_key)
+        _cached_api_key = api_key
+    return _cached_client
 
 # Retry configuration
 MAX_RETRIES = 3

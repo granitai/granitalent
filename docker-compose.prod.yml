@@ -1,0 +1,85 @@
+version: '3.8'
+
+# Production Docker Compose for VPS deployment
+# Usage: docker-compose -f docker-compose.prod.yml up -d --build
+#
+# First-time SSL setup:
+#   1. Run: docker-compose -f docker-compose.prod.yml up -d nginx certbot
+#   2. Run: docker-compose -f docker-compose.prod.yml exec certbot certbot certonly --webroot -w /var/www/certbot -d talents.granitai.com --email your-email@example.com --agree-tos --no-eff-email
+#   3. Restart: docker-compose -f docker-compose.prod.yml restart nginx
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: granitalent-backend
+    expose:
+      - "8000"
+    env_file:
+      - backend/.env
+    environment:
+      - DATA_DIR=/app/data
+    volumes:
+      - db-data:/app/data
+      - ./logs:/app/logs
+      - uploads-data:/app/uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - granitalent-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: granitalent-frontend
+    expose:
+      - "80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - granitalent-net
+
+  nginx:
+    image: nginx:alpine
+    container_name: granitalent-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - certbot-webroot:/var/www/certbot:ro
+      - certbot-certs:/etc/letsencrypt:ro
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+    networks:
+      - granitalent-net
+
+  certbot:
+    image: certbot/certbot
+    container_name: granitalent-certbot
+    volumes:
+      - certbot-webroot:/var/www/certbot
+      - certbot-certs:/etc/letsencrypt
+    # Auto-renew every 12 hours
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done'"
+    networks:
+      - granitalent-net
+
+volumes:
+  db-data:
+  uploads-data:
+  certbot-webroot:
+  certbot-certs:
+
+networks:
+  granitalent-net:
+    driver: bridge

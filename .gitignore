@@ -46,3 +46,6 @@ frontend/.vite/
 *.sqlite
 *.sqlite3
 SSH_UPDATE_GUIDE.md
+
+# SSL certificates (managed by certbot on VPS)
+certbot/

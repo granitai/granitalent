@@ -1,4 +1,5 @@
 """FastAPI application for AI Interviewer."""
+import asyncio
 import base64
 import json
 import sys
@@ -614,7 +615,16 @@ async def check_elevenlabs_status():
 @app.get("/api/providers")
 async def get_providers():
     """Get available providers and their models."""
+    from backend.config import VOICE_PRESETS, GEMINI_LIVE_VOICES
     return {
+        "gemini_live": {
+            "voices": [{"id": k, "name": v} for k, v in GEMINI_LIVE_VOICES.items()],
+            "models": [
+                {"id": "gemini-2.5-flash-native-audio-preview-12-2025", "name": "Gemini 2.0 Flash Live — Real-time Voice"},
+            ],
+            "default_model": "gemini-2.5-flash-native-audio-preview-12-2025",
+            "default_voice": "Kore",
+        },
         "tts": {
             provider: {
                 "name": config["name"],
@@ -652,7 +662,8 @@ async def get_providers():
             "tts_provider": DEFAULT_TTS_PROVIDER,
             "stt_provider": DEFAULT_STT_PROVIDER,
             "llm_provider": DEFAULT_LLM_PROVIDER
-        }
+        },
+        "presets": VOICE_PRESETS
     }
 
 
@@ -3408,7 +3419,6 @@ async def check_and_handle_time_limit(
         cleanup_dedup_cache(conversation_id)
         
         # Wait for any final audio to finish playing before closing
-        import asyncio
         logger.info("⏳ Waiting 10 seconds for any audio to finish...")
         await asyncio.sleep(10)
         
@@ -3627,7 +3637,249 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.info(f"📋 TTS: {config['tts_provider']} / {config['tts_model']}")
             logger.info(f"📋 STT: {config['stt_provider']} / {config['stt_model']}")
             logger.info(f"📋 LLM: {config['llm_provider']} / {config['llm_model']}")
-            
+
+            # ============================================================
+            # GEMINI LIVE MODE — native audio-in/audio-out, sub-second latency
+            # ============================================================
+            if init_data.get("mode") == "gemini_live":
+                logger.info("🎙️ GEMINI LIVE MODE — real-time audio conversation")
+                from backend.services.gemini_live import GeminiLiveSession
+                from backend.config import GOOGLE_API_KEY, build_interviewer_system_prompt
+
+                # Build system prompt with full interview context
+                live_system_prompt = build_interviewer_system_prompt(
+                    job_title=job_offer.title if job_offer else None,
+                    job_offer_description=job_offer.get_full_description() if job_offer else None,
+                    candidate_cv_text=candidate_cv_text,
+                    required_languages=required_languages,
+                    interview_start_language=interview_start_language,
+                    confirmed_candidate_name=candidate_name_from_cv if 'candidate_name_from_cv' in locals() else None,
+                    time_remaining_minutes=float(interview_duration_minutes),
+                    total_interview_minutes=float(interview_duration_minutes),
+                    custom_questions=custom_questions,
+                    evaluation_weights=evaluation_weights,
+                )
+                # Add live-specific instructions
+                live_system_prompt += """
+
+LIVE CONVERSATION RULES:
+- Start by greeting the candidate warmly, then begin the interview.
+- Speak naturally and conversationally — this is a real-time voice call.
+- Keep responses SHORT (1-3 sentences). Do not monologue.
+- Wait for the candidate to finish speaking before responding.
+- When time is up, clearly conclude by saying "This concludes our interview. Thank you for your time" and wish them good luck."""
+
+                live_model = init_data.get("gemini_live_model", "gemini-2.5-flash-native-audio-preview-12-2025")
+                live_voice = init_data.get("gemini_live_voice", "Kore")
+
+                session = GeminiLiveSession(
+                    api_key=GOOGLE_API_KEY,
+                    model=live_model,
+                    system_prompt=live_system_prompt,
+                    voice=live_voice,
+                )
+
+                ws_lock = asyncio.Lock()
+                output_transcript_buffer = []
+                input_transcript_buffer = []
+                input_flush_task = None
+                live_concluded = False
+
+                async def send_user_transcript_update():
+                    """Send current accumulated user transcript to frontend for live display."""
+                    if not input_transcript_buffer:
+                        return
+                    full_text = " ".join(input_transcript_buffer).strip()
+                    if not full_text:
+                        return
+                    async with ws_lock:
+                        try:
+                            await websocket.send_json({
+                                "type": "live_user_transcript",
+                                "text": full_text,
+                            })
+                        except Exception:
+                            pass
+
+                async def finalize_user_transcript():
+                    """Finalize the buffered user transcript into conversation history."""
+                    if not input_transcript_buffer:
+                        return
+                    full_text = " ".join(input_transcript_buffer).strip()
+                    input_transcript_buffer.clear()
+                    if full_text:
+                        conversation.add_message("candidate", full_text)
+
+                async def schedule_input_flush():
+                    """Wait for a pause in user speech, then finalize."""
+                    nonlocal input_flush_task
+                    await asyncio.sleep(2.0)
+                    await finalize_user_transcript()
+                    input_flush_task = None
+
+                async def on_live_audio(pcm_base64: str):
+                    async with ws_lock:
+                        try:
+                            await websocket.send_json({
+                                "type": "live_audio",
+                                "audio": pcm_base64,
+                            })
+                        except Exception:
+                            pass
+
+                async def on_live_text(text: str):
+                    pass
+
+                async def on_live_output_transcription(text: str):
+                    """Transcription of what the AI said."""
+                    output_transcript_buffer.append(text)
+
+                async def on_live_input_transcription(text: str):
+                    """Transcription of what the user said — buffer, show live, debounce finalize."""
+                    nonlocal input_flush_task
+                    text = text.strip()
+                    if not text:
+                        return
+                    input_transcript_buffer.append(text)
+                    # Send progressive update to frontend (replaces previous pending message)
+                    await send_user_transcript_update()
+                    # Reset the debounce timer for finalizing into conversation history
+                    if input_flush_task:
+                        input_flush_task.cancel()
+                    input_flush_task = asyncio.create_task(schedule_input_flush())
+
+                async def on_live_turn_complete():
+                    nonlocal live_concluded, input_flush_task
+                    # AI started responding — finalize any pending user transcript
+                    if input_flush_task:
+                        input_flush_task.cancel()
+                        input_flush_task = None
+                    await finalize_user_transcript()
+                    # Use output transcription buffer for AI text
+                    full_text = " ".join(output_transcript_buffer).strip()
+                    output_transcript_buffer.clear()
+                    if full_text:
+                        conversation.add_message("interviewer", full_text)
+                        async with ws_lock:
+                            try:
+                                await websocket.send_json({
+                                    "type": "live_turn_complete",
+                                    "text": full_text,
+                                })
+                            except Exception:
+                                pass
+                        # Detect conclusion by common farewell phrases
+                        conclusion_phrases = [
+                            "this concludes", "interview is complete",
+                            "end of the interview", "conclude the interview",
+                            "thank you for your time", "we are done",
+                            "that wraps up", "interview is over",
+                            "good luck", "bonne chance",
+                            "entretien est termin", "fin de l'entretien",
+                        ]
+                        text_lower = full_text.lower()
+                        if any(phrase in text_lower for phrase in conclusion_phrases):
+                            logger.info("Gemini Live detected conclusion in AI speech")
+                            live_concluded = True
+                            # Wait for the audio to finish playing
+                            await asyncio.sleep(5)
+                            # Generate assessment
+                            try:
+                                from backend.services.gemini_llm import generate_assessment
+                                history = conversation.get_history_for_llm()
+                                ctx = conversation.get_interview_context()
+                                assessment = generate_assessment(history, interview_context=ctx)
+                                async with ws_lock:
+                                    await websocket.send_json({
+                                        "type": "assessment",
+                                        "assessment": assessment,
+                                    })
+                            except Exception as e:
+                                logger.error(f"Assessment error: {e}")
+
+                async def on_live_interrupted():
+                    async with ws_lock:
+                        try:
+                            await websocket.send_json({"type": "live_interrupted"})
+                        except Exception:
+                            pass
+
+                session.on_audio(on_live_audio)
+                session.on_text(on_live_text)
+                session.on_turn_complete(on_live_turn_complete)
+                session.on_interrupted(on_live_interrupted)
+                session.on_input_transcription(on_live_input_transcription)
+                session.on_output_transcription(on_live_output_transcription)
+
+                try:
+                    await session.connect()
+
+                    await websocket.send_json({
+                        "type": "live_ready",
+                        "conversation_id": conversation_id,
+                        "time_limit_minutes": interview_duration_minutes,
+                    })
+
+                    # Kick off the conversation — Gemini won't speak first on its own
+                    candidate_name = conversation.cv_candidate_name or "the candidate"
+                    start_language = interview_start_language or "English"
+                    await session.send_text(
+                        f"The interview has just started. Speak ONLY in {start_language}. "
+                        f"Greet {candidate_name} warmly in {start_language} and ask your first question in {start_language}."
+                    )
+                    logger.info("📢 Sent initial prompt to Gemini Live to start talking")
+
+                    # Live message loop
+                    while session.connected and not live_concluded:
+                        try:
+                            message = await asyncio.wait_for(websocket.receive(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            continue
+                        except Exception:
+                            break
+                        if "text" in message:
+                            data = json.loads(message["text"])
+                            msg_type = data.get("type")
+
+                            if msg_type == "live_audio":
+                                await session.send_audio(data["audio"])
+                            elif msg_type == "end_interview":
+                                logger.info("User ended Gemini Live interview")
+                                break
+                        elif "bytes" in message:
+                            pass
+                except Exception as e:
+                    if "disconnect" not in str(e).lower():
+                        logger.error(f"Gemini Live error: {e}")
+                        try:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": f"Real-time voice error: {str(e)}. Try the Classic mode instead.",
+                            })
+                        except Exception:
+                            pass
+                finally:
+                    await session.close()
+                    # Generate assessment only if not already done by turn_complete
+                    if not live_concluded and conversation and len(conversation.get_history_for_llm()) >= 4:
+                        try:
+                            from backend.services.gemini_llm import generate_assessment
+                            history = conversation.get_history_for_llm()
+                            ctx = conversation.get_interview_context()
+                            assessment = generate_assessment(history, interview_context=ctx)
+                            await websocket.send_json({
+                                "type": "assessment",
+                                "assessment": assessment,
+                            })
+                        except Exception as e:
+                            logger.error(f"Final assessment error: {e}")
+
+                return  # Exit WebSocket handler after live mode
+
+            # ============================================================
+            # CLASSIC MODE — separate STT + LLM + TTS pipeline
+            # ============================================================
+
             # Start with pre-check phase: audio check
             logger.info("🎯 Starting pre-check phase: audio check...")
             llm_funcs = get_llm_functions(config["llm_provider"])
@@ -3848,7 +4100,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         cleanup_dedup_cache(conv_id)
                         
                         # Wait for any final audio before closing
-                        import asyncio
                         logger.info("⏳ Waiting 5 seconds before closing connection...")
                         await asyncio.sleep(5)
                         
@@ -3897,12 +4148,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif data.get("type") == "audio_chunk":
                     conversation_id = data.get("conversation_id")
                     audio_data = data.get("audio")
-                    
+                    audio_format = data.get("format", "webm")
+
                     if conversation_id in streaming_stt_sessions:
                         try:
                             audio_bytes = base64.b64decode(audio_data)
                             stt_session = streaming_stt_sessions[conversation_id]["session"]
-                            await stt_session.send_audio_chunk(audio_bytes)
+                            await stt_session.send_audio_chunk(audio_bytes, audio_format=audio_format)
                         except ValueError as e:
                             # Conversion failed - send error to client
                             logger.error(f"❌ Audio conversion failed: {e}")
@@ -3937,24 +4189,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         
                         logger.info(f"🎤 Committing streaming audio for {conversation_id}")
                         await stt_session.commit()
-                        
-                        # Wait for final transcript with retries
-                        import asyncio
-                        user_text = ""
-                        max_wait_time = 5.0  # Maximum wait time in seconds (increased for audio conversion)
-                        wait_interval = 0.2  # Check every 200ms
-                        waited = 0.0
-                        
-                        while waited < max_wait_time:
-                            user_text = stt_session.get_transcript()
-                            if user_text.strip():
-                                logger.info(f"✅ Received transcript after {waited:.2f}s")
-                                break
-                            await asyncio.sleep(wait_interval)
-                            waited += wait_interval
-                        
+
+                        # Wait for transcript using event-driven approach (no polling)
+                        user_text = await stt_session.wait_for_transcript(timeout=5.0)
+
                         if not user_text.strip():
-                            logger.warning(f"⚠️ No transcript received after {waited:.2f}s - checking for partial transcripts")
+                            logger.warning(f"⚠️ No transcript received - checking for partial transcripts")
                         
                         stt_duration = time.time() - stt_start_time
                         logger.info(f"⏱️ Streaming STT took {stt_duration:.2f}s (including speech time)")
@@ -3964,7 +4204,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         del streaming_stt_sessions[conversation_id]
                         
                         if not user_text.strip():
-                            logger.warning(f"⚠️ No transcript received after {waited:.2f}s")
+                            logger.warning(f"⚠️ No transcript received after timeout")
                             await websocket.send_json({
                                 "type": "error",
                                 "message": "No speech detected or transcript timeout"
@@ -4103,7 +4343,6 @@ async def websocket_endpoint(websocket: WebSocket):
                             logger.info("🎯 AI concluded the interview - auto-generating assessment")
                             
                             # Wait for the closing audio to finish playing (typical closing is 10-15 seconds)
-                            import asyncio
                             logger.info("⏳ Waiting 12 seconds for closing audio to finish...")
                             await asyncio.sleep(12)
                             
@@ -4458,7 +4697,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         logger.info("🎯 AI concluded the interview - auto-generating assessment")
                         
                         # Wait for the closing audio to finish playing (typical closing is 10-15 seconds)
-                        import asyncio
                         logger.info("⏳ Waiting 12 seconds for closing audio to finish...")
                         await asyncio.sleep(12)
                         
@@ -4774,7 +5012,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         logger.info("🎯 AI concluded the interview - auto-generating assessment")
                         
                         # Wait for the closing audio to finish playing (typical closing is 10-15 seconds)
-                        import asyncio
                         logger.info("⏳ Waiting 12 seconds for closing audio to finish...")
                         await asyncio.sleep(12)
                         

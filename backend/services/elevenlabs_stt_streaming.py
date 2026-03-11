@@ -67,6 +67,7 @@ class ElevenLabsSTTStreaming:
         self.is_connected = False
         self.full_transcript = ""
         self._receive_task = None
+        self._transcript_ready = asyncio.Event()
         
     async def connect(self) -> bool:
         """
@@ -167,6 +168,8 @@ class ElevenLabsSTTStreaming:
                             self.full_transcript = transcript
                         logger.info(f"📝 Streaming STT: Committed transcript: '{transcript[:50]}...'")
                         logger.info(f"📝 Streaming STT: Full transcript so far: '{self.full_transcript[:100]}...'")
+                        # Signal that transcript is ready (unblock waiters)
+                        self._transcript_ready.set()
                         if self.on_final_transcript:
                             self.on_final_transcript(transcript)
                             
@@ -232,34 +235,38 @@ class ElevenLabsSTTStreaming:
             # Don't return original - it will fail anyway, but at least log the issue
             raise ValueError("WebM to PCM conversion failed - ffmpeg required. Install ffmpeg to use streaming STT.")
     
-    async def send_audio_chunk(self, audio_chunk: bytes, commit: bool = False):
+    async def send_audio_chunk(self, audio_chunk: bytes, commit: bool = False, audio_format: str = "webm"):
         """
         Send an audio chunk for transcription.
-        
+
         Args:
-            audio_chunk: Raw audio bytes (PCM or WebM - will be converted to PCM if needed)
+            audio_chunk: Raw audio bytes (PCM or WebM)
             commit: Whether to commit this chunk (signal end of utterance)
+            audio_format: Format of the audio - "pcm_s16le" skips conversion, "webm" triggers conversion
         """
         if not self.is_connected or not self.websocket:
             logger.warning("🎤 Streaming STT: Not connected, cannot send audio")
             return
-            
+
         try:
-            # Convert WebM to PCM if needed (ElevenLabs API requires PCM)
-            # This will raise an error if ffmpeg is not available
-            pcm_audio = self._convert_webm_to_pcm(audio_chunk)
-            
+            # Skip conversion if audio is already raw PCM (sent directly from browser)
+            if audio_format == "pcm_s16le":
+                pcm_audio = audio_chunk
+            else:
+                # Convert WebM to PCM (requires ffmpeg)
+                pcm_audio = self._convert_webm_to_pcm(audio_chunk)
+
             audio_base64 = base64.b64encode(pcm_audio).decode('utf-8')
-            
+
             message = {
                 "message_type": "input_audio_chunk",
                 "audio_base_64": audio_base64,
                 "commit": commit,
                 "sample_rate": self.sample_rate,
             }
-            
+
             await self.websocket.send(json.dumps(message))
-            
+
         except ValueError as e:
             # Conversion failed - don't send invalid audio
             logger.error(f"🎤 Streaming STT: Cannot send audio - {e}")
@@ -272,12 +279,15 @@ class ElevenLabsSTTStreaming:
         """Signal end of audio stream and request final transcript."""
         if not self.is_connected or not self.websocket:
             return
-            
+
         try:
+            # Reset event before committing so wait_for_transcript blocks until new result
+            self._transcript_ready.clear()
+
             # Send an empty audio chunk with commit: true (API doesn't accept separate commit message)
             empty_pcm = b''  # Empty PCM data
             audio_base64 = base64.b64encode(empty_pcm).decode('utf-8')
-            
+
             message = {
                 "message_type": "input_audio_chunk",
                 "audio_base_64": audio_base64,
@@ -286,9 +296,25 @@ class ElevenLabsSTTStreaming:
             }
             await self.websocket.send(json.dumps(message))
             logger.info("🎤 Streaming STT: Committed audio for final transcript")
-            
+
         except Exception as e:
             logger.error(f"🎤 Streaming STT: Commit error: {e}")
+
+    async def wait_for_transcript(self, timeout: float = 5.0) -> str:
+        """Wait for the committed transcript using an event instead of polling.
+
+        Args:
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            The accumulated transcript text
+        """
+        try:
+            await asyncio.wait_for(self._transcript_ready.wait(), timeout=timeout)
+            logger.info(f"✅ Transcript ready via event")
+        except asyncio.TimeoutError:
+            logger.warning(f"⚠️ Transcript wait timed out after {timeout}s")
+        return self.full_transcript
     
     async def close(self):
         """Close the WebSocket connection."""

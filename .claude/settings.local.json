@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"C:\\\\Users\\\\Otmane\\\\Desktop\\\\Workspace\\\\Projets\\\\granitalent\\\\frontend\" && npm run build 2>&1 | tail -10)",
+      "Bash(cd \"C:\\\\Users\\\\Otmane\\\\Desktop\\\\Workspace\\\\Projets\\\\granitalent\" && python -c \"from backend.services.elevenlabs_stt_streaming import ElevenLabsSTTStreaming; s = ElevenLabsSTTStreaming\\(\\); print\\(f'Has wait_for_transcript: {hasattr\\(s, \\\\\"wait_for_transcript\\\\\"\\)}'\\); print\\(f'Has _transcript_ready: {hasattr\\(s, \\\\\"_transcript_ready\\\\\"\\)}'\\)\" 2>&1)",
+      "Bash(cd \"C:\\\\Users\\\\Otmane\\\\Desktop\\\\Workspace\\\\Projets\\\\granitalent\\\\frontend\" && npm run build 2>&1 | tail -15)",
+      "Bash(cd \"C:\\\\Users\\\\Otmane\\\\Desktop\\\\Workspace\\\\Projets\\\\granitalent\" && python -c \"\nfrom backend.services.elevenlabs_stt_streaming import ElevenLabsSTTStreaming\nimport inspect\nsig = inspect.signature\\(ElevenLabsSTTStreaming.send_audio_chunk\\)\nprint\\(f'send_audio_chunk params: {list\\(sig.parameters.keys\\(\\)\\)}'\\)\nprint\\('All imports OK'\\)\n\" 2>&1 | grep -v \"python-dotenv\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/services/gemini_live.py', encoding='utf-8'\\).read\\(\\)\\); print\\('gemini_live OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('backend/main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('backend/services/gemini_live.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
+    ]
+  }
+}

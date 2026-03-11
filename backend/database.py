@@ -4,8 +4,10 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
-# SQLite database file path
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./database.db")
+# SQLite database file path — use /app/data/ in Docker for volume persistence
+DATA_DIR = os.getenv("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(DATA_DIR, exist_ok=True)
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{os.path.join(DATA_DIR, 'database.db')}")
 
 # Create engine
 engine = create_engine(

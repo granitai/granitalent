@@ -123,121 +123,50 @@ Respond only with what you would say, without any prefix."""
     current_language = interview_context.get("current_language") if interview_context else None
     interview_start_language = interview_context.get("interview_start_language") if interview_context else None
     language_to_use = current_language or interview_start_language or "English"
-    
+
     # Log language context for debugging
     if interview_context:
         untested = interview_context.get("untested_languages", [])
         q_count = interview_context.get("questions_in_current_language", 0)
         if untested:
             logger.info(f"🌐 Language context: Speaking {language_to_use} ({q_count} questions). Still need to test: {untested}")
-    
-    # Build language validation instruction if there are untested languages
-    language_validation = ""
-    if interview_context:
-        untested = interview_context.get("untested_languages", [])
-        if untested:
-            language_validation = f"""
 
-LANGUAGE TESTING - CRITICAL:
-- Languages still needing evaluation: {', '.join(untested)}
-- When switching to test a new language:
-  1. Be EXPLICIT: "Now let's evaluate your [Language]. Please answer IN [LANGUAGE]."
-  2. Ask your question IN that target language (not in English)
-  3. If they respond in the wrong language, say: "I notice you responded in [wrong language]. For this evaluation, I need your answer IN [target language]. Please try again."
-  4. Do NOT accept wrong-language responses as valid for that language test
-- NEVER give performance feedback. When concluding say: "Thank you! HR will review your application and contact you soon."
-"""
-    
-    # Build the conversation context
-    prompt_parts = [
-        system_prompt,
-        f"""\nRULES: Respond in {language_to_use} (or switch to another required language if appropriate). No 'Interviewer:' prefix. Stay in character. ONE concise response only.
-When switching languages, be EXPLICIT: "Please answer IN [Language]" and ask in that language.
-If candidate responds in wrong language, ask them to respond again in the correct language.
-NEVER give performance feedback or hints about how well they did.{language_validation}\n"""
-    ]
-    
+    # Build the conversation context — keep it compact for fast inference
+    prompt_parts = [system_prompt]
+
     # Add conversation history
     for msg in conversation_history:
         role_prefix = "Interviewer" if msg["role"] == "assistant" else "Candidate"
         prompt_parts.append(f"{role_prefix}: {msg['content']}")
-    
-    # Check for language switch requests
-    language_switch_keywords = [
-        "switch to", "switch language", "speak in", "parler en", "parlez", "continue in",
-        "now in", "in english", "in french", "en français", "en anglais", "en arabe",
-        "can we speak", "peut-on parler", "let's speak", "parlons", "change to",
-        "change language", "changer de langue", "autre langue"
-    ]
-    user_lower = user_message.lower()
-    is_language_switch_request = any(keyword in user_lower for keyword in language_switch_keywords)
-    
-    # Detect which language they want to switch to
-    target_language = None
-    if is_language_switch_request:
-        if any(word in user_lower for word in ["french", "français", "francais", "français"]):
-            target_language = "French"
-        elif any(word in user_lower for word in ["english", "anglais"]):
-            target_language = "English"
-        elif any(word in user_lower for word in ["arabic", "arabe", "عربي"]):
-            target_language = "Arabic"
-        elif any(word in user_lower for word in ["spanish", "espagnol", "español"]):
-            target_language = "Spanish"
-        elif any(word in user_lower for word in ["german", "allemand", "deutsch"]):
-            target_language = "German"
-        
-        if target_language:
-            logger.info(f"🌐 Language switch request detected: Switching to {target_language}")
-        else:
-            logger.info(f"🌐 Language switch request detected but target language unclear")
-    
+
     # Add current user message
     prompt_parts.append(f"Candidate: {user_message}")
-    
-    # Add explicit language switch instruction if detected (candidate request)
-    if is_language_switch_request and target_language:
-        prompt_parts.append(f"\nThe candidate asked to switch to {target_language}. Please continue the interview in {target_language}.\n")
-    
-    # Add time awareness to prompt
-    time_awareness = ""
+
+    # Final instruction — concise, language-first
+    final_instruction = f"\nRespond as interviewer in {language_to_use}. No prefix. 2-4 sentences max. Ask ONE new question on a DIFFERENT topic."
+
+    # Time urgency
     if interview_context:
         time_remaining = interview_context.get("time_remaining_minutes")
-        total_time = interview_context.get("total_interview_minutes")
-        
         if time_remaining is not None:
             if time_remaining <= 0:
-                time_awareness = f"\n\n⏱️ **TIME IS UP!** CONCLUDE NOW. Say: 'Our time is up. Thank you for your time! HR will review your application and contact you soon.'"
+                final_instruction = f"\nTIME IS UP. Conclude now in {language_to_use}. Thank the candidate. Say HR will follow up."
             elif time_remaining <= 1:
-                time_awareness = f"\n\n⏱️ **{time_remaining:.0f} MIN LEFT - CONCLUDE NOW!**\nSay: 'We're out of time. Thank you! HR will review your application and contact you soon.'"
+                final_instruction = f"\nCONCLUDE NOW in {language_to_use}. Thank the candidate briefly."
             elif time_remaining <= 2:
-                time_awareness = f"\n\n⏱️ **{time_remaining:.1f} MIN LEFT - START CONCLUDING**\nSay: 'We're running short on time.' Ask if they have questions, then conclude with: 'Thank you! HR will contact you soon.'"
-            elif time_remaining <= 3:
-                time_awareness = f"\n\n⏱️ **{time_remaining:.1f} MIN LEFT**\nYou have time for 1-2 more questions. Don't rush to conclude yet."
-    
-    prompt_parts.append(f"\nRespond as interviewer (no prefix).{time_awareness}")
-    
+                final_instruction = f"\nWrap up in {language_to_use}. Ask if they have questions, then conclude."
+
+    prompt_parts.append(final_instruction)
+
     # Generate response
     full_prompt = "\n\n".join(prompt_parts)
     response = model.generate_content(
         full_prompt,
-        generation_config=genai.types.GenerationConfig(temperature=0.8)
+        generation_config=genai.types.GenerationConfig(temperature=0.7, max_output_tokens=300)
     )
-    
+
     # Clean the response
     cleaned = clean_response(response.text)
-    
-    # Additional check: if response seems off-topic, add a redirect
-    if len(cleaned) < 20 or any(word in cleaned.lower() for word in ["i can't", "i'm not", "i cannot", "i don't"]):
-        # Response might be refusing something - check if we need to redirect
-        redirect_followup = f"""The candidate said: "{user_message}"
-Your response was: "{cleaned}"
-
-If your response was refusing something or going off-topic, provide a friendly redirect back to interview questions instead.
-Otherwise, keep your response as is.
-
-Your response (or improved redirect):"""
-        followup_response = model.generate_content(redirect_followup)
-        cleaned = clean_response(followup_response.text)
     
     logger.info(f"🤖 LLM: Generated response: '{cleaned[:50]}...'" if len(cleaned) > 50 else f"🤖 LLM: Generated response: '{cleaned}'")
     
@@ -569,40 +498,40 @@ A proper evaluation cannot be provided as there was insufficient interview conte
             custom_questions_section += f"  {i}. {q}\n"
         custom_questions_section += "\nIn your assessment, note whether each custom question was adequately addressed.\n"
     
-    prompt = f"""You are an expert interview assessor. Based on the following interview information, provide a comprehensive assessment.
+    prompt = f"""You are an expert interview assessor. Evaluate the candidate based ONLY on the transcript below.
 
 {context_section}=== INTERVIEW TRANSCRIPT ===
 {transcript_text}
 {weight_instructions}{custom_questions_section}
-CRITICAL INSTRUCTIONS:
-1. **ONLY USE WHAT IS IN THE TRANSCRIPT ABOVE** - Do NOT invent, assume, or make up any candidate responses that are not explicitly shown in the transcript.
-2. **If the candidate did not answer a question, state that clearly** - Do NOT pretend they answered it.
-3. **If the candidate gave minimal responses, reflect that in your scores** - Low engagement should result in lower scores, not made-up positive evaluations.
-4. **Only provide an evaluation if there is meaningful interview conversation** - If the candidate barely spoke, gave only one-word answers, or didn't engage, state that clearly instead of giving scores.
-5. **Apply recruiter weights if provided** - When calculating overall score, use weighted average based on recruiter priorities.
+RULES:
+- ONLY use evidence from the transcript. Never invent responses.
+- If the candidate gave minimal answers, score low. Do not fabricate positive evaluations.
+- Quote specific candidate responses to justify scores.
 
-Please provide a detailed assessment in the following format. For each evaluation axis, provide:
-1. A score from 0-10
-2. A brief explanation of the score that references SPECIFIC responses from the transcript above
+Provide scores (0-10) with brief justification for each:
 
-**Evaluation Axes:**
-1. **Technical Skills** (0-10) - How well did the candidate demonstrate technical knowledge relevant to the position? ONLY evaluate based on what they actually said in the transcript.
-2. **Job Fit** (0-10) - How well does the candidate match the specific requirements of this position? ONLY evaluate based on their actual responses.
-3. **Communication Skills** (0-10) - How clearly did they express their ideas? Base this ONLY on their actual spoken words in the transcript.
-4. **Problem-Solving Ability** (0-10) - How did they approach questions? If they didn't answer problem-solving questions, score this low and state why.
-5. **CV Consistency** (0-10) - Did their interview responses align with their CV claims? ONLY compare what they actually said to their CV.
+1. **Technical Skills** (0-10) — Technical knowledge demonstrated in their actual responses
+2. **Job Fit** (0-10) — Match to position requirements based on what they said
+3. **Communication Skills** (0-10) — Clarity, structure, and expressiveness of spoken responses
+4. **Problem-Solving Ability** (0-10) — Approach to questions and scenarios
+5. **CV Consistency** (0-10) — Alignment between interview responses and CV claims
 {language_section}
-**Additional Sections:**
-- **Areas of Strength** - What did the candidate do well? ONLY mention things they actually demonstrated in the transcript.
-- **Areas for Improvement** - What could they work on? Be honest about what was missing or insufficient.
-{"- **Custom Questions Coverage** - Were the recruiter's specific questions addressed adequately?" if custom_questions_list else ""}
-- **Hiring Recommendation** - Would you recommend this candidate for THIS specific position? Why or why not? Base this ONLY on their actual performance in the transcript.
+**LANGUAGE PROFICIENCY ASSESSMENT** (CRITICAL — evaluate thoroughly):
+For EACH language used in the transcript, provide:
+- CEFR Level estimate (A1-C2)
+- Grammar accuracy: specific errors with corrections (quote exact words)
+- Vocabulary range: basic/intermediate/advanced with examples
+- Fluency: ability to sustain speech, express complex ideas
+- At least 3 specific quotes from the transcript with analysis
+Note: Occasional fillers ("euh", "umm") are normal in spoken language — do not penalize.
 
-At the end, provide:
-- **Overall Score** (0-10) - {"Calculate using WEIGHTED average based on recruiter priorities above" if evaluation_weights_dict else "Calculate the mean of all axis scores"}
-- **Score Calculation** - Show how the overall score was calculated {"(weighted by recruiter priorities)" if evaluation_weights_dict else "(mean of all axis scores)"}
+**Areas of Strength** — What the candidate demonstrated well (cite transcript)
+**Areas for Improvement** — What was missing or weak
+{"**Custom Questions Coverage** — Were the recruiter's questions addressed?" if custom_questions_list else ""}
+**Hiring Recommendation** — Recommend / Not recommend / Maybe, with justification
 
-REMEMBER: Every claim you make must be supported by actual text from the transcript above. If something wasn't discussed, don't pretend it was. If the candidate didn't answer questions, reflect that honestly in your assessment."""
+**Overall Score** (0-10) — {"Weighted average using recruiter priorities" if evaluation_weights_dict else "Mean of all axis scores"}
+Show the calculation."""
     
     response = model.generate_content(prompt)
     return response.text.strip()

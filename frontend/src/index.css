@@ -2,6 +2,46 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  /* Core colors matching the Tailwind theme */
+  --primary: #0d9488;
+  --primary-light: #ccfbf1;
+  --accent: #7c3aed;
+  --gradient-primary: linear-gradient(135deg, #0d9488 0%, #0f766e 100%);
+
+  /* Backgrounds */
+  --bg-primary: #f8fafc;       /* slate-50 */
+  --bg-secondary: #f1f5f9;     /* slate-100 */
+  --bg-card: #ffffff;
+  --bg-input: #f8fafc;         /* slate-50 */
+  --bg-hover: #f1f5f9;         /* slate-100 */
+
+  /* Text */
+  --text-primary: #0f172a;     /* slate-900 */
+  --text-secondary: #64748b;   /* slate-500 */
+  --text-muted: #94a3b8;       /* slate-400 */
+
+  /* Borders */
+  --border: #e2e8f0;           /* slate-200 */
+  --border-focus: #0d9488;     /* brand-500 */
+
+  /* Status colors */
+  --error: #ef4444;
+  --error-light: #fef2f2;
+  --success: #10b981;
+  --success-light: #ecfdf5;
+  --warning: #f59e0b;
+  --warning-light: #fffbeb;
+  --info: #3b82f6;
+  --info-light: #eff6ff;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+}
+
 @layer base {
   body {
     @apply bg-slate-50 text-slate-900 font-sans;

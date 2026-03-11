@@ -1,188 +1,236 @@
-# Guide de Déploiement Docker
+# Deployment Guide
 
-Ce guide explique comment déployer l'application AI Interview sur un serveur distant avec Docker.
+This project supports two deployment modes: **local development** and **production VPS** with SSL.
 
-## 📋 Prérequis
+---
 
-- Docker et Docker Compose installés sur le serveur
-- Fichier `.env` configuré dans `backend/` avec toutes les clés API
+## Local Development
 
-## 🚀 Déploiement
-
-### 1. Préparer le serveur
+Uses the same setup as before. No SSL, no reverse proxy — just backend + frontend.
 
 ```bash
-# Installer Docker et Docker Compose
-sudo apt update
-sudo apt install -y docker.io docker-compose
-sudo systemctl start docker
-sudo systemctl enable docker
+# Option 1: Use the original docker-compose.yml (unchanged)
+docker-compose up --build
 
-# Vérifier l'installation
-docker --version
-docker-compose --version
+# Option 2: Use the explicit local file
+docker-compose -f docker-compose.local.yml up --build
 ```
 
-### 2. Transférer le projet sur le serveur
+- Frontend: `http://localhost:3034`
+- Backend API: `http://localhost:8000`
+- API Docs: `http://localhost:8000/docs`
 
-**Option A : Via Git**
+For frontend dev server (hot reload):
 ```bash
-git clone <votre-repo> /opt/ai-interview
-cd /opt/ai-interview
+cd frontend && npm run dev    # http://localhost:3000 — proxies to :8000
 ```
 
-**Option B : Via SCP (depuis votre machine locale)**
+---
+
+## Production VPS Deployment (talents.granitai.com)
+
+### Prerequisites
+
+- A VPS with Ubuntu/Debian (IP: `89.116.110.217`)
+- Docker and Docker Compose installed on the VPS
+- Domain `talents.granitai.com` pointing to the VPS (see DNS section below)
+- `backend/.env` configured with all API keys
+
+### Step 1: Configure DNS on Hostinger
+
+Log in to [Hostinger DNS Zone Editor](https://hpanel.hostinger.com/domain/granitai.com/dns) for `granitai.com`:
+
+| Type  | Name      | Value             | TTL  |
+|-------|-----------|-------------------|------|
+| A     | talents   | 89.116.110.217    | 3600 |
+
+**How to add the record:**
+
+1. Go to Hostinger hPanel → **Domains** → `granitai.com` → **DNS / Name Servers** → **DNS Records**
+2. Click **Add Record**
+3. Select type **A**
+4. In **Name** (or Host), enter: `talents`
+5. In **Points to** (or Value), enter: `89.116.110.217`
+6. Set TTL to **3600** (or leave default)
+7. Click **Add Record**
+
+**No CNAME needed** — the A record is sufficient.
+
+**Verify DNS propagation** (wait 5-15 minutes, can take up to 24h):
 ```bash
-scp -r ./AI_Interview user@server:/opt/
-ssh user@server
-cd /opt/AI_Interview
+# From any machine
+nslookup talents.granitai.com
+# Should return 89.116.110.217
+
+# Or use dig
+dig talents.granitai.com +short
 ```
 
-### 3. Configurer les variables d'environnement
-
-```bash
-cd backend
-nano .env
-```
-
-Assurez-vous que le fichier `.env` contient :
-```env
-ELEVENLABS_API_KEY=votre_clé_elevenlabs
-GOOGLE_API_KEY=votre_clé_google
-CARTESIA_API_KEY=votre_clé_cartesia
-OPENAI_API_KEY=votre_clé_openai
-JWT_SECRET_KEY=une_clé_secrète_très_longue_et_aléatoire
-VOICE_ID=cjVigY5qzO86Huf0OWal
-CARTESIA_VOICE_ID=79a125e8-cd45-4c13-8a67-188112f4dd22
-```
-
-### 4. Construire et démarrer les conteneurs
-
-```bash
-# Revenir à la racine du projet
-cd /opt/ai-interview
-
-# Construire les images Docker
-docker-compose build
-
-# Démarrer les services
-docker-compose up -d
-
-# Vérifier que tout fonctionne
-docker-compose ps
-docker-compose logs -f
-```
-
-### 5. Configurer le firewall
+### Step 2: Transfer the project to VPS
 
 ```bash
-# Autoriser le port 80 (frontend)
-sudo ufw allow 80/tcp
+# Option A: Git clone
+ssh root@89.116.110.217
+git clone <your-repo-url> /opt/granitalent
+cd /opt/granitalent
 
-# Optionnel : autoriser le port 8000 (backend direct)
-sudo ufw allow 8000/tcp
-
-# Vérifier le statut
-sudo ufw status
+# Option B: rsync from local machine
+rsync -avz --exclude='node_modules' --exclude='.git' --exclude='*.db' \
+  . root@89.116.110.217:/opt/granitalent/
+ssh root@89.116.110.217
+cd /opt/granitalent
 ```
 
-### 6. Accéder à l'application
-
-- **Frontend** : `http://IP_DU_SERVEUR`
-- **API Backend** : `http://IP_DU_SERVEUR/api`
-- **Documentation API** : `http://IP_DU_SERVEUR/docs`
-
-Pour trouver l'IP du serveur :
-```bash
-# IP publique
-curl ifconfig.me
-
-# Ou IP locale
-hostname -I
-```
-
-## 🔧 Commandes utiles
-
-### Voir les logs
-```bash
-# Tous les services
-docker-compose logs -f
-
-# Backend uniquement
-docker-compose logs -f backend
-
-# Frontend uniquement
-docker-compose logs -f frontend
-```
-
-### Redémarrer les services
-```bash
-docker-compose restart
-```
-
-### Arrêter les services
-```bash
-docker-compose down
-```
-
-### Reconstruire après modifications
-```bash
-docker-compose up -d --build
-```
-
-### Accéder au shell du backend
-```bash
-docker-compose exec backend bash
-```
-
-### Vérifier l'état des conteneurs
-```bash
-docker-compose ps
-```
-
-## 🐛 Dépannage
-
-### Les conteneurs ne démarrent pas
-```bash
-# Vérifier les logs
-docker-compose logs
-
-# Vérifier que le fichier .env existe
-ls -la backend/.env
-```
-
-### Erreur de connexion à la base de données
-- Vérifier que le volume `database.db` est bien monté
-- Les permissions peuvent être un problème : `sudo chmod 666 backend/database.db`
-
-### Le frontend ne charge pas
-- Vérifier que le port 80 est ouvert : `sudo ufw status`
-- Vérifier les logs Nginx : `docker-compose logs frontend`
-
-### L'API ne répond pas
-- Vérifier que le backend est démarré : `docker-compose ps`
-- Vérifier les logs : `docker-compose logs backend`
-- Tester directement : `curl http://localhost:8000/docs`
-
-## 📝 Notes importantes
-
-- **Développement local** : Vous pouvez toujours utiliser `npm run dev` sur votre machine locale pour le développement. Les modifications sont compatibles avec les deux environnements.
-- **Base de données** : La base de données SQLite est persistée dans `backend/database.db` via un volume Docker.
-- **Variables d'environnement** : Ne jamais commiter le fichier `.env` dans Git.
-- **CORS** : En production, vous pouvez restreindre les origines autorisées dans `backend/main.py` ligne 96.
-
-## 🔄 Mise à jour
-
-Pour mettre à jour l'application après des modifications :
+### Step 3: Configure environment
 
 ```bash
-# Arrêter les services
-docker-compose down
-
-# Récupérer les dernières modifications (si Git)
-git pull
-
-# Reconstruire et redémarrer
-docker-compose up -d --build
+cp backend/.env.example backend/.env
+nano backend/.env
+# Fill in all API keys: ELEVENLABS_API_KEY, GOOGLE_API_KEY, etc.
 ```
 
+### Step 4: Configure firewall
+
+```bash
+sudo ufw allow 22/tcp    # SSH
+sudo ufw allow 80/tcp    # HTTP (for Let's Encrypt + redirect)
+sudo ufw allow 443/tcp   # HTTPS
+sudo ufw enable
+```
+
+### Step 5: Deploy with SSL
+
+**Automated (recommended):**
+```bash
+DEPLOY_EMAIL=your-email@example.com bash deploy.sh
+```
+
+**Manual step-by-step:**
+
+```bash
+# 1. Use HTTP-only nginx config (needed for Let's Encrypt challenge)
+cp nginx/conf.d/app.conf.initial nginx/conf.d/app.conf
+
+# 2. Build and start services
+docker compose -f docker-compose.prod.yml up -d --build
+
+# 3. Obtain SSL certificate
+docker compose -f docker-compose.prod.yml run --rm certbot \
+  certbot certonly --webroot \
+  -w /var/www/certbot \
+  -d talents.granitai.com \
+  --email your-email@example.com \
+  --agree-tos --no-eff-email
+
+# 4. Switch to full SSL nginx config
+cp nginx/conf.d/app.conf.ssl nginx/conf.d/app.conf
+
+# 5. Restart nginx to load SSL config
+docker compose -f docker-compose.prod.yml restart nginx
+
+# 6. Start certbot auto-renewal
+docker compose -f docker-compose.prod.yml up -d certbot
+```
+
+### Step 6: Verify
+
+```bash
+# Check all containers are running
+docker compose -f docker-compose.prod.yml ps
+
+# Test HTTPS
+curl -I https://talents.granitai.com
+```
+
+Visit: **https://talents.granitai.com**
+
+---
+
+## File Structure
+
+```
+docker-compose.yml           # Original (works for both quick local and simple deploy)
+docker-compose.local.yml     # Explicit local development config
+docker-compose.prod.yml      # Production VPS with SSL (nginx + certbot)
+deploy.sh                    # Automated production deployment script
+nginx/
+  conf.d/
+    app.conf                 # Active nginx config (swapped during deploy)
+    app.conf.initial         # HTTP-only config (for first certbot run)
+    app.conf.ssl             # Full HTTPS config (restored after certbot)
+```
+
+---
+
+## Useful Commands
+
+### Production (VPS)
+
+```bash
+# View logs
+docker compose -f docker-compose.prod.yml logs -f
+docker compose -f docker-compose.prod.yml logs -f backend
+
+# Restart
+docker compose -f docker-compose.prod.yml restart
+
+# Rebuild after code changes
+docker compose -f docker-compose.prod.yml up -d --build
+
+# Stop everything
+docker compose -f docker-compose.prod.yml down
+
+# Force SSL renewal
+docker compose -f docker-compose.prod.yml run --rm certbot certbot renew --force-renewal
+docker compose -f docker-compose.prod.yml restart nginx
+
+# Shell into backend container
+docker compose -f docker-compose.prod.yml exec backend bash
+```
+
+### Local
+
+```bash
+docker-compose up --build          # Start
+docker-compose down                # Stop
+docker-compose logs -f backend     # Logs
+```
+
+---
+
+## Updating the VPS after code changes
+
+```bash
+ssh root@89.116.110.217
+cd /opt/granitalent
+git pull                                               # or rsync new files
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+---
+
+## Troubleshooting
+
+### SSL certificate not obtained
+- Verify DNS: `dig talents.granitai.com +short` must return `89.116.110.217`
+- Ensure port 80 is open: `sudo ufw status`
+- Check certbot logs: `docker compose -f docker-compose.prod.yml logs certbot`
+- Make sure `app.conf.initial` is active (HTTP-only) during certificate request
+
+### "Connection refused" on HTTPS
+- Check nginx is running: `docker compose -f docker-compose.prod.yml ps`
+- Check nginx logs: `docker compose -f docker-compose.prod.yml logs nginx`
+- Verify port 443 is open: `sudo ufw allow 443/tcp`
+
+### WebSocket not connecting
+- The nginx config includes long timeouts (`proxy_read_timeout 3600s`) for `/ws`
+- Check browser console for WebSocket errors
+- Verify the backend is healthy: `curl http://localhost:8000/docs` from the VPS
+
+### Frontend shows blank page
+- Check frontend container: `docker compose -f docker-compose.prod.yml logs frontend`
+- Verify the build succeeded during `docker compose up --build`
+
+### Database issues
+- Database is persisted in the `db-data` Docker volume
+- To inspect: `docker compose -f docker-compose.prod.yml exec backend ls -la /app/backend/database.db`

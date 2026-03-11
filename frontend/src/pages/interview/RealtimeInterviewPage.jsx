@@ -42,19 +42,21 @@ export default function RealtimeInterviewPage() {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-900">
-        <Loader2 className="h-8 w-8 animate-spin text-brand-400" />
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+        <Loader2 className="h-8 w-8 animate-spin text-brand-500" />
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-900 px-4">
-        <p className="text-lg text-red-400">{error}</p>
-        <button onClick={() => navigate('/my-applications')} className="mt-4 flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 text-sm text-white hover:bg-white/20">
-          <ArrowLeft className="h-4 w-4" /> Back to Portal
-        </button>
+      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4">
+        <div className="card p-8 text-center max-w-md">
+          <p className="text-lg font-medium text-red-600">{error}</p>
+          <button onClick={() => navigate('/my-applications')} className="btn-secondary mt-6">
+            <ArrowLeft className="h-4 w-4" /> Back to Portal
+          </button>
+        </div>
       </div>
     )
   }

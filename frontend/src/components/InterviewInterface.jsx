@@ -14,15 +14,114 @@ const getWebSocketURL = () => {
 const WS_URL = getWebSocketURL()
 const API_BASE_URL = '/api'
 
-// Voice Activity Detection settings - Balanced for responsiveness and avoiding interruption
+// ================================================================
+// PCM Player — streams 24kHz PCM audio from Gemini Live API
+// ================================================================
+class PCMPlayer {
+  constructor() {
+    this.ctx = null
+    this.nextTime = 0
+    this.sources = []
+    this.gainNode = null
+    this.pendingChunks = []
+    this.ready = false
+  }
+
+  init() {
+    if (this.ctx) return
+    this.ctx = new AudioContext({ sampleRate: 24000 })
+    this.gainNode = this.ctx.createGain()
+    this.gainNode.connect(this.ctx.destination)
+    // Resume AudioContext (browser requires user gesture — by now user clicked Start)
+    const resumePromise = this.ctx.state === 'suspended' ? this.ctx.resume() : Promise.resolve()
+    resumePromise.then(() => {
+      this.ready = true
+      // Play any chunks that arrived while we were resuming
+      // Add warmup offset so the audio pipeline has time to start outputting
+      if (this.pendingChunks.length > 0) {
+        this.nextTime = this.ctx.currentTime + 0.2
+        for (const chunk of this.pendingChunks) {
+          this._playChunk(chunk)
+        }
+        this.pendingChunks = []
+      }
+    })
+  }
+
+  feed(pcmBase64) {
+    if (!this.ctx || !this.gainNode) this.init()
+
+    const binary = atob(pcmBase64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    const int16 = new Int16Array(bytes.buffer)
+    const float32 = new Float32Array(int16.length)
+    for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0
+
+    if (!this.ready) {
+      // Queue chunks until AudioContext is resumed
+      this.pendingChunks.push(float32)
+      return
+    }
+    this._playChunk(float32)
+  }
+
+  _playChunk(float32) {
+    const buffer = this.ctx.createBuffer(1, float32.length, 24000)
+    buffer.getChannelData(0).set(float32)
+
+    const source = this.ctx.createBufferSource()
+    source.buffer = buffer
+    source.connect(this.gainNode)
+
+    const now = this.ctx.currentTime
+    // If nextTime is in the past or zero, this is the start of a new utterance.
+    // Add 200ms warmup so the audio pipeline is ready before samples reach the speaker.
+    if (this.nextTime < now) {
+      this.nextTime = now + 0.2
+    }
+    source.start(this.nextTime)
+    this.nextTime = this.nextTime + buffer.duration
+
+    this.sources.push(source)
+    source.onended = () => {
+      const idx = this.sources.indexOf(source)
+      if (idx >= 0) this.sources.splice(idx, 1)
+    }
+  }
+
+  stop() {
+    for (const s of this.sources) {
+      try { s.stop() } catch {}
+    }
+    this.sources = []
+    this.pendingChunks = []
+    this.nextTime = 0
+  }
+
+  isPlaying() {
+    return this.sources.length > 0
+  }
+
+  close() {
+    this.stop()
+    if (this.ctx) {
+      this.ctx.close().catch(() => {})
+      this.ctx = null
+      this.ready = false
+    }
+  }
+}
+
+// Voice Activity Detection settings - Optimized for real-time conversation
 const SILENCE_THRESHOLD = 30  // Volume below this = silence
 const MIN_SPEECH_VOLUME = 35  // Minimum volume to consider as actual speech (filters ambient noise)
-const SILENCE_DURATION = 2500  // 2.5 seconds of silence before stopping - balanced
-const SPEECH_MIN_DURATION = 600  // Minimum 600ms of speech to be valid
+const SILENCE_DURATION = 1200  // 1.2s of silence before stopping — fast turnover
+const SPEECH_MIN_DURATION = 400  // Minimum 400ms of speech to be valid
 const MAX_RECORDING_DURATION = 60000  // 60 seconds max per answer
-const RESPONSE_DEBOUNCE_MS = 2000  // Prevent processing duplicate responses within 2 seconds
-const FORCE_STOP_AFTER_MS = 45000  // Failsafe: force stop recording after 45 seconds even if VAD fails
-const LOW_ACTIVITY_TIMEOUT_MS = 8000  // If no strong speech detected for 8 seconds, stop
+const RESPONSE_DEBOUNCE_MS = 1000  // Prevent processing duplicate responses within 1 second
+const FORCE_STOP_AFTER_MS = 30000  // Failsafe: force stop recording after 30 seconds
+const LOW_ACTIVITY_TIMEOUT_MS = 5000  // If no strong speech detected for 5 seconds, stop
 
 function InterviewInterface({ interview, onClose }) {
   const [connected, setConnected] = useState(false)
@@ -82,6 +181,18 @@ function InterviewInterface({ interview, onClose }) {
   const fullInterviewStreamRef = useRef(null)
   const videoPreviewRef = useRef(null)
 
+  // PCM capture refs for streaming STT (avoids server-side WebM→PCM conversion)
+  const pcmWorkerRef = useRef(null)
+  const pcmBufferRef = useRef([])
+
+  // Gemini Live mode refs
+  const isLiveModeRef = useRef(false)
+  const pcmPlayerRef = useRef(null)
+  const liveFlushIntervalRef = useRef(null)
+  const [liveMode, setLiveMode] = useState(false)
+  const [liveVoice, setLiveVoice] = useState('Kore')
+  const [liveModel, setLiveModel] = useState('gemini-2.5-flash-native-audio-preview-12-2025')
+
   // Load providers on mount
   useEffect(() => {
     loadProviders()
@@ -136,10 +247,11 @@ function InterviewInterface({ interview, onClose }) {
       // Set fallback defaults
       setTtsProvider('elevenlabs')
       setTtsModel('eleven_flash_v2_5')
-      setSttProvider('elevenlabs')
-      setSttModel('scribe_v1')
+      setSttProvider('elevenlabs_streaming')
+      setSttModel('scribe_v2_stream')
       setLlmProvider('gemini')
-      setLlmModel('gemini-2.5-flash-lite')
+      setLlmModel('gemini-2.5-flash')
+      isStreamingModeRef.current = true
     }
   }
 
@@ -250,9 +362,65 @@ function InterviewInterface({ interview, onClose }) {
       countdownIntervalRef.current = null
     }
 
+    stopPcmFlush()
+    pcmBufferRef.current = []
+
+    // Clean up live mode resources
+    if (liveFlushIntervalRef.current) {
+      clearInterval(liveFlushIntervalRef.current)
+      liveFlushIntervalRef.current = null
+    }
+    if (pcmPlayerRef.current) {
+      pcmPlayerRef.current.close()
+      pcmPlayerRef.current = null
+    }
+
     stopCurrentAudio()
     isAudioPlayingRef.current = false
     pendingListenRef.current = false
+  }
+
+  // ========== GEMINI LIVE STREAMING ==========
+  const startLiveStreaming = () => {
+    console.log('🎙️ Starting live PCM streaming to Gemini...')
+
+    // Ensure audio context and PCM capture are initialized
+    // (initAudioContext should already have been called in connectWebSocket)
+
+    // Flush PCM buffer to server every 100ms for low latency
+    liveFlushIntervalRef.current = setInterval(() => {
+      if (pcmBufferRef.current.length === 0) return
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+
+      // Merge all buffered PCM chunks
+      const totalLength = pcmBufferRef.current.reduce((sum, buf) => sum + buf.byteLength, 0)
+      if (totalLength === 0) return
+
+      const merged = new Uint8Array(totalLength)
+      let offset = 0
+      for (const buf of pcmBufferRef.current) {
+        merged.set(new Uint8Array(buf), offset)
+        offset += buf.byteLength
+      }
+      pcmBufferRef.current = []
+
+      // Convert to base64
+      let binary = ''
+      for (let i = 0; i < merged.length; i++) {
+        binary += String.fromCharCode(merged[i])
+      }
+      const base64Audio = btoa(binary)
+
+      // Send to server
+      try {
+        wsRef.current.send(JSON.stringify({
+          type: 'live_audio',
+          audio: base64Audio,
+        }))
+      } catch (e) {
+        console.error('Error sending live audio:', e)
+      }
+    }, 100) // 100ms flush interval for real-time feel
   }
 
   // ========== VIDEO RECORDING FUNCTIONS ==========
@@ -360,7 +528,13 @@ function InterviewInterface({ interview, onClose }) {
 
   const initAudioContext = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      })
       mediaStreamRef.current = stream
 
       const audioContext = new (window.AudioContext || window.webkitAudioContext)()
@@ -373,6 +547,36 @@ function InterviewInterface({ interview, onClose }) {
 
       const microphone = audioContext.createMediaStreamSource(stream)
       microphone.connect(analyser)
+
+      // Set up PCM capture for streaming STT (bypasses server-side WebM→PCM conversion)
+      // Use ScriptProcessorNode to capture raw float32 samples, downsample to 16kHz 16-bit PCM
+      const bufferSize = 4096
+      const processorNode = audioContext.createScriptProcessor(bufferSize, 1, 1)
+      const targetSampleRate = 16000
+      const sourceSampleRate = audioContext.sampleRate
+
+      processorNode.onaudioprocess = (e) => {
+        // In live mode, always capture PCM. In classic mode, only during recording.
+        if (!isLiveModeRef.current && (!isRecordingRef.current || !isStreamingModeRef.current)) return
+
+        const inputData = e.inputBuffer.getChannelData(0)
+
+        // Downsample from source rate to 16kHz
+        const ratio = sourceSampleRate / targetSampleRate
+        const newLength = Math.floor(inputData.length / ratio)
+        const int16Array = new Int16Array(newLength)
+        for (let i = 0; i < newLength; i++) {
+          const srcIndex = Math.floor(i * ratio)
+          // Clamp and convert float32 [-1,1] to int16
+          const s = Math.max(-1, Math.min(1, inputData[srcIndex]))
+          int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
+        }
+        pcmBufferRef.current.push(int16Array.buffer)
+      }
+
+      microphone.connect(processorNode)
+      processorNode.connect(audioContext.destination) // Required for processing to run
+      pcmWorkerRef.current = processorNode
     } catch (error) {
       console.error('Error initializing audio context:', error)
       throw new Error('Please allow microphone access to use this feature.')
@@ -395,7 +599,7 @@ function InterviewInterface({ interview, onClose }) {
         // Start video recording when interview connects
         startFullInterviewRecording()
 
-        // Send start interview message with selected providers/models
+        // Send start interview message
         const startMessage = {
           type: 'start_interview',
           interview_id: interview.interview_id,
@@ -405,7 +609,14 @@ function InterviewInterface({ interview, onClose }) {
           stt_provider: sttProvider,
           stt_model: sttModel,
           llm_provider: llmProvider,
-          llm_model: llmModel
+          llm_model: llmModel,
+        }
+
+        // Add live mode fields
+        if (isLiveModeRef.current) {
+          startMessage.mode = 'gemini_live'
+          startMessage.gemini_live_model = liveModel
+          startMessage.gemini_live_voice = liveVoice
         }
 
         console.log('Sending start interview message:', startMessage)
@@ -604,12 +815,81 @@ function InterviewInterface({ interview, onClose }) {
         startStreamingChunks()
         break
 
+      // ============================================================
+      // GEMINI LIVE MODE messages
+      // ============================================================
+      case 'live_ready':
+        console.log('🎙️ Gemini Live session ready!')
+        conversationIdRef.current = data.conversation_id
+        if (data.time_limit_minutes) {
+          startCountdown(data.time_limit_minutes)
+        }
+        updateStatus('Live — speak naturally', 'connected')
+        // Initialize PCM player early so it's ready for first audio
+        if (!pcmPlayerRef.current) {
+          pcmPlayerRef.current = new PCMPlayer()
+        }
+        pcmPlayerRef.current.init()
+        // Start continuous PCM streaming to server
+        startLiveStreaming()
+        break
+
+      case 'live_audio':
+        // Feed audio chunk to PCM player for immediate playback
+        if (pcmPlayerRef.current) {
+          pcmPlayerRef.current.feed(data.audio)
+        }
+        if (!isAudioPlayingRef.current) {
+          isAudioPlayingRef.current = true
+          updateStatus('AI is speaking...', 'connected')
+        }
+        break
+
+      case 'live_user_transcript':
+        // Buffered transcription of what the user said — update or add
+        if (data.text) {
+          setConversation(prev => {
+            // If the last message is a pending user message, replace it
+            if (prev.length > 0 && prev[prev.length - 1].sender === 'user' && prev[prev.length - 1].pending) {
+              const updated = [...prev]
+              updated[updated.length - 1] = { sender: 'user', text: data.text, timestamp: new Date(), pending: true }
+              return updated
+            }
+            // Otherwise add a new pending user message
+            return [...prev, { sender: 'user', text: data.text, timestamp: new Date(), pending: true }]
+          })
+        }
+        break
+
+      case 'live_turn_complete':
+        isAudioPlayingRef.current = false
+        updateStatus('Live — speak naturally', 'connected')
+        // Finalize any pending user message
+        setConversation(prev => prev.map(msg =>
+          msg.pending ? { ...msg, pending: false } : msg
+        ))
+        if (data.text) {
+          addMessage('interviewer', data.text)
+        }
+        break
+
+      case 'live_interrupted':
+        // User interrupted the AI — stop playback
+        if (pcmPlayerRef.current) {
+          pcmPlayerRef.current.stop()
+        }
+        isAudioPlayingRef.current = false
+        updateStatus('Live — speak naturally', 'connected')
+        break
+
       case 'error':
         console.error('❌ Error from server:', data.message)
         updateStatus(`Error: ${data.message}`, 'error')
         setError(data.message)
         streamingStartedRef.current = false
-        setTimeout(() => startListening(), 1000)
+        if (!isLiveModeRef.current) {
+          setTimeout(() => startListening(), 1000)
+        }
         break
 
       default:
@@ -661,7 +941,7 @@ function InterviewInterface({ interview, onClose }) {
           // Short delay to ensure audio is completely finished
           setTimeout(() => {
             resolve()
-          }, 300)
+          }, 100)
         }
 
         audio.onerror = (error) => {
@@ -723,7 +1003,7 @@ function InterviewInterface({ interview, onClose }) {
       pendingListenRef.current = false
       setTimeout(() => {
         startListening()
-      }, 500) // Extra delay after all audio finished
+      }, 200) // Brief delay after audio finished before listening
     }
   }
 
@@ -778,8 +1058,8 @@ function InterviewInterface({ interview, onClose }) {
 
     updateStatus('Listening... Speak when ready', 'listening')
 
-    // Start Voice Activity Detection with slightly slower interval to reduce CPU usage
-    vadIntervalRef.current = setInterval(checkVoiceActivity, 150)
+    // Start Voice Activity Detection — 100ms for responsive detection
+    vadIntervalRef.current = setInterval(checkVoiceActivity, 100)
   }
 
   const stopListening = () => {
@@ -894,17 +1174,15 @@ function InterviewInterface({ interview, onClose }) {
       mediaRecorderRef.current = mediaRecorder
 
       audioChunksRef.current = []
+      pcmBufferRef.current = []
       recordingStartTimeRef.current = Date.now()
       streamingStartedRef.current = false
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data)
-
-          // In streaming mode, send chunks immediately if stream is ready
-          if (isStreamingModeRef.current && streamingStartedRef.current) {
-            sendAudioChunk(event.data)
-          }
+          // In streaming mode, PCM chunks are captured via ScriptProcessorNode
+          // and flushed periodically — no need to send WebM chunks here
         }
       }
 
@@ -961,13 +1239,67 @@ function InterviewInterface({ interview, onClose }) {
   }
 
   const startStreamingChunks = () => {
-    console.log(`📤 Stream ready, sending ${audioChunksRef.current.length} buffered chunks`)
-    for (const chunk of audioChunksRef.current) {
-      sendAudioChunk(chunk)
+    // Flush any PCM buffers accumulated before stream_ready
+    if (pcmBufferRef.current.length > 0) {
+      console.log(`📤 Stream ready, flushing ${pcmBufferRef.current.length} buffered PCM chunks`)
+      for (const buf of pcmBufferRef.current) {
+        sendPcmChunk(buf)
+      }
+      pcmBufferRef.current = []
     }
+    // Start the periodic PCM flush (sends accumulated PCM every 250ms)
+    startPcmFlush()
     updateStatus('Recording... (STREAMING - will auto-stop when you pause)', 'recording')
   }
 
+  // Periodically flush PCM buffer to server (batches small ScriptProcessor callbacks)
+  const pcmFlushIntervalRef = useRef(null)
+  const startPcmFlush = () => {
+    if (pcmFlushIntervalRef.current) return
+    pcmFlushIntervalRef.current = setInterval(() => {
+      if (pcmBufferRef.current.length > 0 && streamingStartedRef.current) {
+        // Merge all accumulated PCM chunks into one
+        const totalLength = pcmBufferRef.current.reduce((sum, buf) => sum + buf.byteLength, 0)
+        const merged = new Uint8Array(totalLength)
+        let offset = 0
+        for (const buf of pcmBufferRef.current) {
+          merged.set(new Uint8Array(buf), offset)
+          offset += buf.byteLength
+        }
+        pcmBufferRef.current = []
+        sendPcmChunk(merged.buffer)
+      }
+    }, 250) // Flush every 250ms — balances latency vs overhead
+  }
+
+  const stopPcmFlush = () => {
+    if (pcmFlushIntervalRef.current) {
+      clearInterval(pcmFlushIntervalRef.current)
+      pcmFlushIntervalRef.current = null
+    }
+  }
+
+  const sendPcmChunk = (arrayBuffer) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !streamingStartedRef.current) return
+    try {
+      const bytes = new Uint8Array(arrayBuffer)
+      let binary = ''
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i])
+      }
+      const base64Audio = btoa(binary)
+      wsRef.current.send(JSON.stringify({
+        type: 'audio_chunk',
+        conversation_id: conversationIdRef.current,
+        audio: base64Audio,
+        format: 'pcm_s16le'
+      }))
+    } catch (error) {
+      console.error('Error sending PCM chunk:', error)
+    }
+  }
+
+  // Legacy WebM chunk sender (used only in batch/non-streaming mode)
   const sendAudioChunk = (audioBlob) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !streamingStartedRef.current) return
 
@@ -1002,6 +1334,20 @@ function InterviewInterface({ interview, onClose }) {
     if (!isRecordingRef.current || !mediaRecorderRef.current) return
 
     stopListening()
+    stopPcmFlush()
+
+    // Flush any remaining PCM data before stopping
+    if (isStreamingModeRef.current && pcmBufferRef.current.length > 0 && streamingStartedRef.current) {
+      const totalLength = pcmBufferRef.current.reduce((sum, buf) => sum + buf.byteLength, 0)
+      const merged = new Uint8Array(totalLength)
+      let offset = 0
+      for (const buf of pcmBufferRef.current) {
+        merged.set(new Uint8Array(buf), offset)
+        offset += buf.byteLength
+      }
+      pcmBufferRef.current = []
+      sendPcmChunk(merged.buffer)
+    }
 
     if (mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop()
@@ -1013,6 +1359,9 @@ function InterviewInterface({ interview, onClose }) {
 
   const cancelRecording = () => {
     if (!mediaRecorderRef.current) return
+
+    stopPcmFlush()
+    pcmBufferRef.current = []
 
     if (mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop()
@@ -1124,6 +1473,15 @@ function InterviewInterface({ interview, onClose }) {
     stopListening()
     stopCurrentAudio()
 
+    // Stop live mode streaming
+    if (liveFlushIntervalRef.current) {
+      clearInterval(liveFlushIntervalRef.current)
+      liveFlushIntervalRef.current = null
+    }
+    if (pcmPlayerRef.current) {
+      pcmPlayerRef.current.stop()
+    }
+
     if (isRecording) {
       cancelRecording()
     }
@@ -1192,90 +1550,159 @@ function InterviewInterface({ interview, onClose }) {
 
       {!connected && providersConfig && (
         <div className="provider-selectors">
-          <div className="selector-group">
-            <label>TTS Provider</label>
-            <select
-              value={ttsProvider}
-              onChange={(e) => handleProviderChange('tts', e.target.value)}
-              disabled={connected}
-            >
-              {Object.entries(providersConfig.tts || {}).map(([id, config]) => (
-                <option key={id} value={id}>{config.name}</option>
-              ))}
-            </select>
-          </div>
+          {/* Preset buttons */}
+          {providersConfig.presets && (
+            <div className="presets-section">
+              <label className="presets-label">Quick Setup</label>
+              <div className="presets-grid">
+                {Object.entries(providersConfig.presets).map(([id, preset]) => (
+                  <button
+                    key={id}
+                    className={`preset-btn ${
+                      preset.mode === 'gemini_live'
+                        ? (liveMode ? 'active' : '')
+                        : (!liveMode &&
+                           ttsProvider === preset.tts_provider &&
+                           ttsModel === preset.tts_model &&
+                           sttProvider === preset.stt_provider &&
+                           llmProvider === preset.llm_provider &&
+                           llmModel === preset.llm_model
+                             ? 'active' : '')
+                    }`}
+                    onClick={() => {
+                      if (preset.mode === 'gemini_live') {
+                        setLiveMode(true)
+                        isLiveModeRef.current = true
+                        if (preset.gemini_live_model) setLiveModel(preset.gemini_live_model)
+                        if (preset.gemini_live_voice) setLiveVoice(preset.gemini_live_voice)
+                      } else {
+                        setLiveMode(false)
+                        isLiveModeRef.current = false
+                        setTtsProvider(preset.tts_provider)
+                        setTtsModel(preset.tts_model)
+                        setSttProvider(preset.stt_provider)
+                        setSttModel(preset.stt_model)
+                        setLlmProvider(preset.llm_provider)
+                        setLlmModel(preset.llm_model)
+                        isStreamingModeRef.current = preset.stt_provider === 'elevenlabs_streaming'
+                      }
+                    }}
+                  >
+                    <span className="preset-name">{preset.name}</span>
+                    <span className="preset-desc">{preset.description}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
-          <div className="selector-group">
-            <label>TTS Model</label>
-            <select
-              value={ttsModel}
-              onChange={(e) => setTtsModel(e.target.value)}
-              disabled={connected || !ttsProvider}
-            >
-              {providersConfig.tts?.[ttsProvider]?.models.map((model) => (
-                <option key={model.id} value={model.id}>{model.name}</option>
-              ))}
-            </select>
-          </div>
+          <details className="advanced-settings">
+            <summary>Advanced Settings</summary>
+            <div className="advanced-grid">
+              <div className="selector-group">
+                <label>TTS Provider</label>
+                <select
+                  value={ttsProvider}
+                  onChange={(e) => handleProviderChange('tts', e.target.value)}
+                  disabled={connected}
+                >
+                  {Object.entries(providersConfig.tts || {}).map(([id, config]) => (
+                    <option key={id} value={id}>{config.name}</option>
+                  ))}
+                </select>
+              </div>
 
-          <div className="selector-group">
-            <label>STT Provider</label>
-            <select
-              value={sttProvider}
-              onChange={(e) => handleProviderChange('stt', e.target.value)}
-              disabled={connected}
-            >
-              {Object.entries(providersConfig.stt || {}).map(([id, config]) => (
-                <option key={id} value={id}>{config.name}</option>
-              ))}
-            </select>
-          </div>
+              <div className="selector-group">
+                <label>TTS Model</label>
+                <select
+                  value={ttsModel}
+                  onChange={(e) => setTtsModel(e.target.value)}
+                  disabled={connected || !ttsProvider}
+                >
+                  {providersConfig.tts?.[ttsProvider]?.models.map((model) => (
+                    <option key={model.id} value={model.id}>{model.name}</option>
+                  ))}
+                </select>
+              </div>
 
-          <div className="selector-group">
-            <label>STT Model</label>
-            <select
-              value={sttModel}
-              onChange={(e) => setSttModel(e.target.value)}
-              disabled={connected || !sttProvider}
-            >
-              {providersConfig.stt?.[sttProvider]?.models.map((model) => (
-                <option key={model.id} value={model.id}>{model.name}</option>
-              ))}
-            </select>
-          </div>
+              <div className="selector-group">
+                <label>STT Provider</label>
+                <select
+                  value={sttProvider}
+                  onChange={(e) => handleProviderChange('stt', e.target.value)}
+                  disabled={connected}
+                >
+                  {Object.entries(providersConfig.stt || {}).map(([id, config]) => (
+                    <option key={id} value={id}>{config.name}</option>
+                  ))}
+                </select>
+              </div>
 
-          <div className="selector-group">
-            <label>LLM Provider</label>
-            <select
-              value={llmProvider}
-              onChange={(e) => handleProviderChange('llm', e.target.value)}
-              disabled={connected}
-            >
-              {Object.entries(providersConfig.llm || {}).map(([id, config]) => (
-                <option key={id} value={id}>{config.name}</option>
-              ))}
-            </select>
-          </div>
+              <div className="selector-group">
+                <label>STT Model</label>
+                <select
+                  value={sttModel}
+                  onChange={(e) => setSttModel(e.target.value)}
+                  disabled={connected || !sttProvider}
+                >
+                  {providersConfig.stt?.[sttProvider]?.models.map((model) => (
+                    <option key={model.id} value={model.id}>{model.name}</option>
+                  ))}
+                </select>
+              </div>
 
-          <div className="selector-group">
-            <label>LLM Model</label>
-            <select
-              value={llmModel}
-              onChange={(e) => setLlmModel(e.target.value)}
-              disabled={connected || !llmProvider}
-            >
-              {providersConfig.llm?.[llmProvider]?.models.map((model) => (
-                <option key={model.id} value={model.id}>{model.name}</option>
-              ))}
-            </select>
-          </div>
+              <div className="selector-group">
+                <label>LLM Provider</label>
+                <select
+                  value={llmProvider}
+                  onChange={(e) => handleProviderChange('llm', e.target.value)}
+                  disabled={connected}
+                >
+                  {Object.entries(providersConfig.llm || {}).map(([id, config]) => (
+                    <option key={id} value={id}>{config.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="selector-group">
+                <label>LLM Model</label>
+                <select
+                  value={llmModel}
+                  onChange={(e) => setLlmModel(e.target.value)}
+                  disabled={connected || !llmProvider}
+                >
+                  {providersConfig.llm?.[llmProvider]?.models.map((model) => (
+                    <option key={model.id} value={model.id}>{model.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </details>
+
+          {/* Voice selector for Gemini Live mode */}
+          {liveMode && providersConfig?.gemini_live && (
+            <div className="live-voice-selector">
+              <label>AI Voice</label>
+              <div className="voice-options">
+                {providersConfig.gemini_live.voices.map((v) => (
+                  <button
+                    key={v.id}
+                    className={`voice-btn ${liveVoice === v.id ? 'active' : ''}`}
+                    onClick={() => setLiveVoice(v.id)}
+                  >
+                    {v.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <button
             className="start-interview-btn"
             onClick={connectWebSocket}
-            disabled={!ttsProvider || !ttsModel || !sttProvider || !sttModel || !llmProvider || !llmModel}
+            disabled={liveMode ? false : (!ttsProvider || !ttsModel || !sttProvider || !sttModel || !llmProvider || !llmModel)}
           >
-            Start Interview
+            {liveMode ? 'Start Live Interview' : 'Start Interview'}
           </button>
         </div>
       )}
@@ -1367,7 +1794,13 @@ function InterviewInterface({ interview, onClose }) {
       </div>
 
       <div className="interview-controls">
-        {isListening && !isRecording && (
+        {liveMode && connected && !assessment && (
+          <div className="listening-indicator live-indicator">
+            <HiSpeakerWave className="pulse-icon" />
+            <span>Live</span>
+          </div>
+        )}
+        {!liveMode && isListening && !isRecording && (
           <div className="listening-indicator">
             <HiSpeakerWave className="pulse-icon" />
             <span>Listening...</span>
