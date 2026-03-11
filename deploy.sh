@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================
 # Granitalent VPS Deployment Script
+# Uses existing Traefik reverse proxy on the "proxy" network
 # Run this on the VPS: bash deploy.sh
 # =============================================================
 
 set -e
 
 DOMAIN="talents.granitai.com"
-EMAIL="${DEPLOY_EMAIL:-admin@granitai.com}"  # Override with: DEPLOY_EMAIL=you@example.com bash deploy.sh
 
 echo "============================================"
 echo "  Granitalent Production Deployment"
@@ -18,7 +18,7 @@ echo "============================================"
 # Step 1: Check prerequisites
 # ----------------------------------------------------------
 echo ""
-echo "[1/5] Checking prerequisites..."
+echo "[1/4] Checking prerequisites..."
 
 if ! command -v docker &> /dev/null; then
     echo "Docker not found. Installing..."
@@ -46,7 +46,7 @@ echo "Using: $DC"
 # Step 2: Ensure backend/.env exists
 # ----------------------------------------------------------
 echo ""
-echo "[2/5] Checking environment configuration..."
+echo "[2/4] Checking environment configuration..."
 
 if [ ! -f backend/.env ]; then
     echo "ERROR: backend/.env not found!"
@@ -57,52 +57,49 @@ fi
 echo "backend/.env found."
 
 # ----------------------------------------------------------
-# Step 3: Initial SSL certificate setup
+# Step 3: Ensure Traefik proxy network exists
 # ----------------------------------------------------------
 echo ""
-echo "[3/5] Setting up SSL certificates..."
+echo "[3/4] Checking Traefik proxy network..."
 
-# Use initial (HTTP-only) nginx config for ACME challenge
-cp nginx/conf.d/app.conf.initial nginx/conf.d/app.conf
+if ! docker network inspect proxy &> /dev/null; then
+    echo "ERROR: Docker network 'proxy' not found!"
+    echo "Traefik must be running with a 'proxy' network."
+    echo "Make sure the company-profile-agent Traefik is up."
+    exit 1
+fi
 
-# Start services with HTTP-only config
-$DC -f docker-compose.prod.yml up -d --build backend frontend nginx
+echo "Traefik proxy network found."
 
-echo "Waiting for nginx to start..."
+# Clean up old nginx/certbot containers if they exist
+if docker ps -a --format '{{.Names}}' | grep -q granitalent-nginx; then
+    echo "Removing old nginx container..."
+    docker stop granitalent-nginx 2>/dev/null || true
+    docker rm granitalent-nginx 2>/dev/null || true
+fi
+
+if docker ps -a --format '{{.Names}}' | grep -q granitalent-certbot; then
+    echo "Removing old certbot container..."
+    docker stop granitalent-certbot 2>/dev/null || true
+    docker rm granitalent-certbot 2>/dev/null || true
+fi
+
+# ----------------------------------------------------------
+# Step 4: Build and deploy
+# ----------------------------------------------------------
+echo ""
+echo "[4/4] Building and deploying..."
+
+$DC -f docker-compose.prod.yml up -d --build
+
+echo ""
+echo "Waiting for services to start..."
 sleep 5
 
-# Request certificate
-echo "Requesting Let's Encrypt certificate for $DOMAIN..."
-$DC -f docker-compose.prod.yml run --rm certbot \
-    certbot certonly \
-    --webroot \
-    -w /var/www/certbot \
-    -d "$DOMAIN" \
-    --email "$EMAIL" \
-    --agree-tos \
-    --no-eff-email \
-    --force-renewal
-
 # ----------------------------------------------------------
-# Step 4: Switch to full SSL config
+# Verify
 # ----------------------------------------------------------
-echo ""
-echo "[4/5] Enabling HTTPS configuration..."
-
-cp nginx/conf.d/app.conf.ssl nginx/conf.d/app.conf
-
-# Restart nginx with SSL config
-$DC -f docker-compose.prod.yml restart nginx
-
-# Start certbot auto-renewal daemon
-$DC -f docker-compose.prod.yml up -d certbot
-
-# ----------------------------------------------------------
-# Step 5: Verify
-# ----------------------------------------------------------
-echo ""
-echo "[5/5] Verifying deployment..."
-sleep 3
+echo "Verifying deployment..."
 
 if curl -s -o /dev/null -w "%{http_code}" "https://$DOMAIN" | grep -q "200\|301\|302"; then
     echo ""
@@ -113,10 +110,11 @@ if curl -s -o /dev/null -w "%{http_code}" "https://$DOMAIN" | grep -q "200\|301\
 else
     echo ""
     echo "WARNING: Could not verify HTTPS access."
-    echo "Check that DNS is pointed to this server."
-    echo "You can check logs with:"
-    echo "  $DC -f docker-compose.prod.yml logs nginx"
+    echo "Traefik may need a moment to obtain the SSL certificate."
+    echo "Check logs with:"
     echo "  $DC -f docker-compose.prod.yml logs backend"
+    echo "  $DC -f docker-compose.prod.yml logs frontend"
+    echo "  docker logs company-profile-agent-traefik-1"
 fi
 
 echo ""
