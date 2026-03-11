@@ -16,7 +16,9 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('backend/main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('backend/migrate_db.py', encoding='utf-8'\\).read\\(\\)\\); print\\('migrate OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('backend/models/db_models.py', encoding='utf-8'\\).read\\(\\)\\); print\\('models OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('backend/services/gemini_live.py', encoding='utf-8'\\).read\\(\\)\\); print\\('gemini_live OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('backend/main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('backend/services/storage.py', encoding='utf-8'\\).read\\(\\)\\); print\\('storage OK'\\)\")",
       "Bash(python -c \"import py_compile; py_compile.compile\\('backend/services/elevenlabs_stt.py', doraise=True\\); print\\('elevenlabs_stt.py OK'\\)\" 2>&1)",
-      "Bash(python -c \"import py_compile; py_compile.compile\\('backend/main.py', doraise=True\\); print\\('main.py OK'\\)\" 2>&1)"
+      "Bash(python -c \"import py_compile; py_compile.compile\\('backend/main.py', doraise=True\\); print\\('main.py OK'\\)\" 2>&1)",
+      "Read(//mnt/c/Users/Otmane/Desktop/Workspace/Projets/**)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''backend/main.py'', doraise=True\\); print\\(''OK''\\)\")"
     ]
   }
 }

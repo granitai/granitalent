@@ -3059,6 +3059,7 @@ async def end_async_interview(
 
         def _run_assessment_background():
             try:
+                from backend.database import SessionLocal
                 db_bg = SessionLocal()
                 try:
                     provider_preferences = {}
@@ -4062,6 +4063,7 @@ LIVE CONVERSATION RULES:
 
                             def _run_classic_assessment_bg():
                                 try:
+                                    from backend.database import SessionLocal
                                     db_bg = SessionLocal()
                                     try:
                                         llm_prov = _config.get("llm_provider", DEFAULT_LLM_PROVIDER)

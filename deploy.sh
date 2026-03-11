@@ -90,11 +90,18 @@ fi
 echo ""
 echo "[4/4] Building and deploying..."
 
+# Stop existing containers first to force Traefik to re-read labels
+$DC -f docker-compose.prod.yml down 2>/dev/null || true
+
 $DC -f docker-compose.prod.yml up -d --build
 
 echo ""
 echo "Waiting for services to start..."
-sleep 5
+sleep 10
+
+echo ""
+echo "Container status:"
+docker ps --filter "name=granitalent" --format "table {{.Names}}\t{{.Status}}"
 
 # ----------------------------------------------------------
 # Verify
