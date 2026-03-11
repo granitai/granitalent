@@ -21,4 +21,4 @@ COPY backend/ ./backend/
 EXPOSE 8000
 
 # Run the application from the backend directory
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "python -m backend.migrate_db && uvicorn backend.main:app --host 0.0.0.0 --port 8000"]

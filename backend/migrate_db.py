@@ -204,8 +204,22 @@ def migrate_database():
                 else:
                     logger.info(f"Column '{column_name}' already exists")
             
+            # Add cv_file_path column to applications table
+            result = conn.execute(text("""
+                SELECT COUNT(*) as count
+                FROM pragma_table_info('applications')
+                WHERE name='cv_file_path'
+            """))
+            if result.fetchone()[0] == 0:
+                logger.info("Adding 'cv_file_path' column to applications table...")
+                conn.execute(text("ALTER TABLE applications ADD COLUMN cv_file_path TEXT"))
+                conn.commit()
+                logger.info("✅ Added 'cv_file_path' column")
+            else:
+                logger.info("Column 'cv_file_path' already exists")
+
             logger.info("✅ Database migration completed successfully!")
-            
+
     except Exception as e:
         logger.error(f"❌ Migration failed: {e}")
         raise

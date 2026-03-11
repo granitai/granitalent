@@ -64,6 +64,7 @@ from backend.models.job_offer import (
 )
 from backend.services.cv_parser import parse_pdf, validate_pdf
 from backend.services.language_evaluator import evaluate_cv_fit
+from backend.services.storage import upload_file as s3_upload, download_file as s3_download, is_s3_enabled
 from backend.database import init_db, get_db
 from backend.models.db_models import (
     JobOffer as DBJobOffer,
@@ -129,10 +130,34 @@ app.add_middleware(
 # Store active conversations (in production, use Redis or database)
 active_conversations: dict = {}
 
-# Ensure uploads directory exists (use absolute path to avoid CWD issues)
-UPLOADS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+# Language name → ISO 639-1 code mapping for STT
+LANGUAGE_TO_ISO = {
+    "english": "en", "french": "fr", "arabic": "ar", "spanish": "es",
+    "german": "de", "italian": "it", "portuguese": "pt", "dutch": "nl",
+    "russian": "ru", "chinese": "zh", "japanese": "ja", "korean": "ko",
+    "turkish": "tr", "polish": "pl", "swedish": "sv", "danish": "da",
+    "norwegian": "no", "finnish": "fi", "czech": "cs", "greek": "el",
+    "hindi": "hi", "thai": "th", "vietnamese": "vi", "indonesian": "id",
+    "malay": "ms", "romanian": "ro", "hungarian": "hu", "ukrainian": "uk",
+    "hebrew": "he", "persian": "fa", "bengali": "bn", "urdu": "ur",
+}
+
+def get_language_code(language_name: str) -> str:
+    """Convert language name (e.g. 'French') to ISO code (e.g. 'fr')."""
+    if not language_name:
+        return ""
+    # If already a 2-letter code, return as-is
+    if len(language_name) <= 3 and language_name.isalpha():
+        return language_name.lower()
+    return LANGUAGE_TO_ISO.get(language_name.lower().strip(), "")
+
+# Ensure uploads directory exists — use DATA_DIR if set (Docker), else local
+_data_dir = os.getenv("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+UPLOADS_DIR = os.path.join(_data_dir, "uploads")
 VIDEOS_DIR = os.path.join(UPLOADS_DIR, "videos")
+CVS_DIR = os.path.join(UPLOADS_DIR, "cvs")
 os.makedirs(VIDEOS_DIR, exist_ok=True)
+os.makedirs(CVS_DIR, exist_ok=True)
 
 # Mount uploads directory for static file serving
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
@@ -794,6 +819,64 @@ async def get_parsed_cv_text(evaluation_id: str):
 # Candidate Application Endpoints
 # ============================================================
 
+def _run_cv_evaluation_background(application_id: str, cv_text: str, job_description: str, required_languages: str, job_offer_id: str):
+    """Run CV evaluation in a background thread and update the database."""
+    from backend.database import SessionLocal
+    try:
+        logger.info(f"Background CV evaluation started for {application_id}")
+        evaluation_result = evaluate_cv_fit(
+            cv_text=cv_text,
+            job_offer_description=job_description,
+            llm_provider=DEFAULT_LLM_PROVIDER,
+            required_languages=required_languages
+        )
+
+        bg_db = SessionLocal()
+        try:
+            app_record = bg_db.query(DBApplication).filter(DBApplication.application_id == application_id).first()
+            if app_record:
+                app_record.ai_status = evaluation_result["status"]
+                app_record.ai_reasoning = evaluation_result.get("reasoning", "")
+                app_record.ai_score = evaluation_result.get("score", 0)
+                app_record.ai_skills_match = evaluation_result.get("skills_match", 0)
+                app_record.ai_experience_match = evaluation_result.get("experience_match", 0)
+                app_record.ai_education_match = evaluation_result.get("education_match", 0)
+                app_record.language_check_json = json.dumps(evaluation_result.get("language_check")) if evaluation_result.get("language_check") else None
+                app_record.job_fit_check_json = json.dumps(evaluation_result.get("job_fit_check")) if evaluation_result.get("job_fit_check") else None
+
+            cv_eval = DBCVEvaluation(
+                evaluation_id=f"eval_{uuid.uuid4().hex[:12]}",
+                application_id=application_id,
+                job_offer_id=job_offer_id,
+                status=evaluation_result["status"],
+                score=evaluation_result.get("score", 0),
+                skills_match=evaluation_result.get("skills_match", 0),
+                experience_match=evaluation_result.get("experience_match", 0),
+                education_match=evaluation_result.get("education_match", 0),
+                reasoning=evaluation_result.get("reasoning", ""),
+                cv_text_length=len(cv_text),
+                parsed_cv_text=cv_text
+            )
+            bg_db.add(cv_eval)
+            bg_db.commit()
+            logger.info(f"Background CV evaluation completed for {application_id}: {evaluation_result['status']}")
+        finally:
+            bg_db.close()
+    except Exception as e:
+        logger.error(f"Background CV evaluation failed for {application_id}: {e}")
+        # Mark as error so admin knows evaluation failed
+        try:
+            bg_db = SessionLocal()
+            app_record = bg_db.query(DBApplication).filter(DBApplication.application_id == application_id).first()
+            if app_record and app_record.ai_status == "processing":
+                app_record.ai_status = "error"
+                app_record.ai_reasoning = f"Evaluation failed: {str(e)}"
+                bg_db.commit()
+            bg_db.close()
+        except Exception:
+            pass
+
+
 @app.post("/api/candidates/apply")
 async def submit_application(
     job_offer_id: str = Form(...),
@@ -808,15 +891,14 @@ async def submit_application(
 ):
     """
     Submit a candidate application for a job offer.
-    No signup required - candidates can apply directly.
+    CV is uploaded immediately and evaluation runs in the background.
     """
     try:
         # Validate job offer exists in database
         db_job_offer = db.query(DBJobOffer).filter(DBJobOffer.offer_id == job_offer_id).first()
         if not db_job_offer:
             raise HTTPException(status_code=404, detail="Job offer not found")
-        
-        # Create a JobOffer object for compatibility with existing code
+
         from backend.models.job_offer import JobOffer
         job_offer = JobOffer(
             title=db_job_offer.title,
@@ -826,39 +908,32 @@ async def submit_application(
             education_requirements=db_job_offer.education_requirements or "",
             offer_id=db_job_offer.offer_id
         )
-        
+
         # Validate PDF
         file_content = await cv_file.read()
         if not validate_pdf(file_content):
             raise HTTPException(status_code=400, detail="Invalid PDF file")
-        
-        # Parse CV
+
+        # Parse CV text
         cv_text = parse_pdf(file_content)
-        
+
+        # Generate application ID and save the PDF file
+        application_id = f"app_{uuid.uuid4().hex[:12]}"
+        cv_relative_path = f"cvs/{application_id}.pdf"
+        s3_upload(file_content, cv_relative_path, content_type="application/pdf", local_dir=UPLOADS_DIR)
+
         # Handle cover letter file if provided
         cover_letter_text = ""
         cover_letter_filename = None
         if cover_letter_file:
             cover_letter_filename = cover_letter_file.filename
             cover_letter_content = await cover_letter_file.read()
-            # Try to parse if it's a PDF
             if cover_letter_filename.lower().endswith('.pdf'):
                 try:
                     cover_letter_text = parse_pdf(cover_letter_content)
                 except:
-                    cover_letter_text = ""  # If parsing fails, leave empty
-            # For DOC/DOCX, we'll just store the filename (text extraction would require additional libraries)
-        
-        # Automatically evaluate CV - Language evaluator checks if CV has required languages
-        application_id = f"app_{uuid.uuid4().hex[:12]}"
-        logger.info(f"📋 Evaluating CV for application: {application_id}")
-        evaluation_result = evaluate_cv_fit(
-            cv_text=cv_text,
-            job_offer_description=job_offer.get_full_description(),
-            llm_provider=DEFAULT_LLM_PROVIDER,
-            required_languages=db_job_offer.required_languages
-        )
-        
+                    cover_letter_text = ""
+
         # Get or create candidate
         candidate = db.query(DBCandidate).filter(DBCandidate.email == email).first()
         if not candidate:
@@ -870,9 +945,9 @@ async def submit_application(
                 portfolio=portfolio or None
             )
             db.add(candidate)
-            db.flush()  # Get candidate_id
-        
-        # Create application in database
+            db.flush()
+
+        # Create application immediately with "processing" status
         application = DBApplication(
             application_id=application_id,
             candidate_id=candidate.candidate_id,
@@ -881,71 +956,31 @@ async def submit_application(
             cover_letter_filename=cover_letter_filename,
             cv_text=cv_text,
             cv_filename=cv_file.filename,
-            ai_status=evaluation_result["status"],
-            ai_reasoning=evaluation_result.get("reasoning", ""),
-            ai_score=evaluation_result.get("score", 0),
-            ai_skills_match=evaluation_result.get("skills_match", 0),
-            ai_experience_match=evaluation_result.get("experience_match", 0),
-            ai_education_match=evaluation_result.get("education_match", 0),
-            language_check_json=json.dumps(evaluation_result.get("language_check")) if evaluation_result.get("language_check") else None,
-            job_fit_check_json=json.dumps(evaluation_result.get("job_fit_check")) if evaluation_result.get("job_fit_check") else None,
+            cv_file_path=cv_relative_path,
+            ai_status="processing",
+            ai_reasoning="CV evaluation in progress...",
             hr_status="pending"
         )
         db.add(application)
-        
-        # Also save CV evaluation
-        cv_eval = DBCVEvaluation(
-            evaluation_id=f"eval_{uuid.uuid4().hex[:12]}",
-            application_id=application_id,
-            job_offer_id=job_offer_id,
-            status=evaluation_result["status"],
-            score=evaluation_result.get("score", 0),
-            skills_match=evaluation_result.get("skills_match", 0),
-            experience_match=evaluation_result.get("experience_match", 0),
-            education_match=evaluation_result.get("education_match", 0),
-            reasoning=evaluation_result.get("reasoning", ""),
-            cv_text_length=len(cv_text),
-            parsed_cv_text=cv_text
-        )
-        db.add(cv_eval)
-        
         db.commit()
-        
-        # Also store in-memory for backward compatibility
-        application_data = {
-            "application_id": application_id,
-            "job_offer_id": job_offer_id,
-            "job_title": job_offer.title,
-            "full_name": full_name,
-            "email": email,
-            "phone": phone,
-            "linkedin": linkedin,
-            "portfolio": portfolio,
-            "cover_letter": cover_letter_text,
-            "cover_letter_filename": cover_letter_filename,
-            "cv_text": cv_text,
-            "cv_filename": cv_file.filename,
-            "submitted_at": datetime.now().isoformat(),
-            "status": "pending",
-            "evaluation": evaluation_result,
-            "evaluation_status": evaluation_result["status"]
-        }
-        candidate_applications[application_id] = application_data
-        
-        logger.info(f"✅ Application submitted: {application_id} for {job_offer.title} by {full_name}")
-        logger.info(f"📊 CV Evaluation: {evaluation_result['status']} (score: {evaluation_result.get('score', 'N/A')})")
-        
+
+        logger.info(f"Application submitted: {application_id} for {job_offer.title} by {full_name}")
+
+        # Run CV evaluation in the background
+        import threading
+        eval_thread = threading.Thread(
+            target=_run_cv_evaluation_background,
+            args=(application_id, cv_text, job_offer.get_full_description(), db_job_offer.required_languages, job_offer_id),
+            daemon=True
+        )
+        eval_thread.start()
+
         return {
             "application_id": application_id,
             "status": "submitted",
-            "evaluation": {
-                "status": evaluation_result["status"],
-                "score": evaluation_result.get("score", 0),
-                "reasoning": evaluation_result.get("reasoning", "")
-            },
-            "message": "Application submitted successfully. Your CV has been evaluated."
+            "message": "Your application has been submitted successfully! Our team will review your CV shortly."
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1311,6 +1346,27 @@ async def list_applications(
     return result
 
 
+@app.get("/api/admin/applications/{application_id}/cv-file")
+async def download_cv_file(application_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Download the original CV PDF file for admin preview."""
+    from fastapi.responses import Response
+    application = db.query(DBApplication).filter(DBApplication.application_id == application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    cv_path = getattr(application, 'cv_file_path', None)
+    if not cv_path:
+        raise HTTPException(status_code=404, detail="CV file not available for this application")
+    file_bytes = s3_download(cv_path, local_dir=UPLOADS_DIR)
+    if not file_bytes:
+        raise HTTPException(status_code=404, detail="CV file not found")
+    filename = application.cv_filename or f"{application_id}.pdf"
+    return Response(
+        content=file_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )
+
+
 @app.get("/api/admin/applications/{application_id}")
 async def get_application_details(application_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
     """Get full application details including CV text."""
@@ -1346,6 +1402,7 @@ async def get_application_details(application_id: str, db: Session = Depends(get
         "cover_letter": application.cover_letter,
         "cv_text": application.cv_text,
         "cv_filename": application.cv_filename,
+        "cv_file_available": bool(getattr(application, 'cv_file_path', None)),
         "ai_status": application.ai_status,
         "ai_reasoning": application.ai_reasoning,
         "ai_score": application.ai_score,
@@ -1996,12 +2053,38 @@ async def get_interview_recording(interview_id: str, db: Session = Depends(get_d
     
     if not interview.recording_audio:
         raise HTTPException(status_code=404, detail="No recording available for this interview")
-    
+
+    # If stored in S3, fetch and return as base64 for backward compat
+    if interview.recording_audio.startswith("s3://"):
+        audio_key = interview.recording_audio[5:]
+        audio_bytes = s3_download(audio_key, local_dir=UPLOADS_DIR)
+        if not audio_bytes:
+            raise HTTPException(status_code=404, detail="Recording file not found")
+        return {
+            "interview_id": interview_id,
+            "recording_audio": base64.b64encode(audio_bytes).decode('utf-8'),
+            "audio_format": "mp3"
+        }
+
     return {
         "interview_id": interview_id,
         "recording_audio": interview.recording_audio,
         "audio_format": "mp3"
     }
+
+
+@app.get("/api/admin/interviews/{interview_id}/video")
+async def get_interview_video(interview_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Get the interview video recording file."""
+    from fastapi.responses import Response
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview or not interview.recording_video:
+        raise HTTPException(status_code=404, detail="No video recording available")
+    video_bytes = s3_download(interview.recording_video, local_dir=UPLOADS_DIR)
+    if not video_bytes:
+        raise HTTPException(status_code=404, detail="Video file not found")
+    ext = interview.recording_video.rsplit('.', 1)[-1] if '.' in interview.recording_video else "webm"
+    return Response(content=video_bytes, media_type=f"video/{ext}")
 
 
 # ============================================================
@@ -2457,12 +2540,13 @@ async def submit_async_answer(
     
     logger.info(f"📝 Using providers for async interview: LLM={llm_provider}/{llm_model}, TTS={tts_provider}/{tts_model}, STT={stt_provider}/{stt_model}")
     
-    # Speech to Text
+    # Speech to Text — pass language code for better accuracy
+    stt_lang_code = get_language_code(job_offer.interview_start_language or "")
     stt_func = get_stt_function(stt_provider)
     if stt_provider == "cartesia":
         user_text = stt_func(audio_bytes, audio_format="webm", model_id=stt_model)
     else:
-        user_text = stt_func(audio_bytes, model_id=stt_model)
+        user_text = stt_func(audio_bytes, model_id=stt_model, language_code=stt_lang_code or None)
     
     if not user_text.strip():
         raise HTTPException(status_code=400, detail="Could not transcribe audio. Please try again.")
@@ -2797,11 +2881,15 @@ async def save_async_interview_recording(
                 combined_audio.export(output, format="mp3", bitrate="128k")
                 output.seek(0)
                 
-                # Encode to base64 for storage
-                recording_base64 = base64.b64encode(output.read()).decode('utf-8')
-                
-                # Store in database
-                interview.recording_audio = recording_base64
+                audio_bytes = output.read()
+                audio_key = f"recordings/{interview_id}.mp3"
+                s3_upload(audio_bytes, audio_key, content_type="audio/mpeg", local_dir=UPLOADS_DIR)
+
+                # Store key in database (or base64 as fallback for backward compat)
+                if is_s3_enabled():
+                    interview.recording_audio = f"s3://{audio_key}"
+                else:
+                    interview.recording_audio = base64.b64encode(audio_bytes).decode('utf-8')
                 db.commit()
                 
                 logger.info(f"✅ Saved combined interview recording for interview: {interview_id} ({len(recording_base64)} chars)")
@@ -2882,16 +2970,11 @@ async def upload_interview_video(
         if video_file.filename and '.' in video_file.filename:
             file_extension = video_file.filename.split('.')[-1]
             
-        file_path = os.path.join(VIDEOS_DIR, f"{interview_id}.{file_extension}")
-        
-        # Write file to disk
-        with open(file_path, "wb") as buffer:
-            content = await video_file.read()
-            buffer.write(content)
-            
-        # Update database record (store relative path for serving)
-        # Serving path will be /uploads/videos/{interview_id}.{file_extension}
-        interview.recording_video = f"videos/{interview_id}.{file_extension}"
+        video_key = f"videos/{interview_id}.{file_extension}"
+        content = await video_file.read()
+        s3_upload(content, video_key, content_type=f"video/{file_extension}", local_dir=UPLOADS_DIR)
+
+        interview.recording_video = video_key
         db.commit()
         
         logger.info(f"✅ Video uploaded successfully for interview {interview_id}: {file_path}")
@@ -2918,31 +3001,31 @@ async def end_async_interview(
     request: AsyncInterviewEndRequest,
     db: Session = Depends(get_db)
 ):
-    """End an asynchronous interview - generates assessment and marks it as completed."""
+    """End an asynchronous interview - marks as completed and generates assessment in background."""
     if db is None:
         db = next(get_db())
-    
+
     # Verify interview exists and email matches
     interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
-    
+
     application = db.query(DBApplication).filter(DBApplication.application_id == interview.application_id).first()
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
-    
+
     candidate = db.query(DBCandidate).filter(DBCandidate.candidate_id == application.candidate_id).first()
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    
+
     if candidate.email != request.email:
         raise HTTPException(status_code=403, detail="Access denied. Email does not match interview candidate.")
-    
+
     # Get job offer for interview context
     job_offer = db.query(DBJobOffer).filter(DBJobOffer.offer_id == interview.job_offer_id).first()
     if not job_offer:
         raise HTTPException(status_code=404, detail="Job offer not found")
-    
+
     # Get conversation history
     conversation_history = []
     if interview.conversation_history:
@@ -2950,120 +3033,126 @@ async def end_async_interview(
             conversation_history = json.loads(interview.conversation_history)
         except:
             conversation_history = []
-    
-    # Only generate assessment if there's conversation history
-    assessment = None
-    recommendation = "not_recommended"  # Default if no conversation
-    
-    if conversation_history and len(conversation_history) > 0:
-        try:
-            # Get providers from stored preferences or use defaults
-            provider_preferences = {}
-            try:
-                if hasattr(interview, 'provider_preferences') and interview.provider_preferences:
-                    try:
-                        provider_preferences = json.loads(interview.provider_preferences)
-                    except:
-                        provider_preferences = {}
-            except AttributeError:
-                provider_preferences = {}
-            
-            # For LLM, ALWAYS use GPT to avoid Gemini quota issues
-            llm_provider = "gpt"
-            llm_model = provider_preferences.get("llm_model") or LLM_PROVIDERS[llm_provider]["default_model"]
-            
-            logger.info(f"📝 Generating assessment for ended async interview: {interview_id} using LLM={llm_provider}/{llm_model}")
-            
-            # Build interview context
-            from backend.config import build_interviewer_system_prompt
-            import json as json_module
-            
-            required_languages_list = []
-            if job_offer.required_languages:
-                try:
-                    required_languages_list = json_module.loads(job_offer.required_languages)
-                except:
-                    pass
-            
-            interview_context = {
-                "job_title": job_offer.title,
-                "job_offer_description": job_offer.description,
-                "candidate_cv_text": application.cv_text,
-                "required_languages": job_offer.required_languages,
-                "interview_start_language": job_offer.interview_start_language or "English",
-                "required_languages_list": required_languages_list,
-                "custom_questions": job_offer.custom_questions,
-                "evaluation_weights": job_offer.evaluation_weights
-            }
-            
-            # Generate assessment
-            llm_funcs = get_llm_functions(llm_provider)
-            assessment = llm_funcs["generate_assessment"](
-                conversation_history=conversation_history,
-                model_id=llm_model,
-                interview_context=interview_context
-            )
-            
-            # Determine recommendation (default to recommended if assessment was generated)
-            recommendation = "recommended"
-            
-            logger.info(f"✅ Generated assessment for ended async interview: {interview_id}")
-        except Exception as e:
-            logger.error(f"❌ Error generating assessment for ended async interview: {e}")
-            # Still mark as completed even if assessment generation fails
-            assessment = "**Interview Completed**\n\nThank you for your time! Our HR team will review your application and get back to you soon.\n\nWe appreciate your interest in this position."
-    else:
-        logger.warning(f"⚠️ No conversation history found for interview {interview_id} - marking as completed without assessment")
-        assessment = "**Interview Ended**\n\nThank you for your time! Our HR team will review your application and get back to you soon."
-    
-    # Update interview with assessment and status
+
+    # Mark as completed immediately so candidate can leave
     interview.status = "completed"
     interview.completed_at = datetime.utcnow()
-    if assessment:
-        interview.assessment = assessment
-    interview.recommendation = recommendation
-    # Ensure conversation history is saved
     if conversation_history:
         interview.conversation_history = json.dumps(conversation_history)
-    
-    # Update application
     application.interview_completed_at = datetime.utcnow()
-    application.interview_recommendation = recommendation
-    
     db.commit()
-    
-    # Generate transcript annotations (AI feedback per user message)
+
+    # Generate assessment in background thread
     if conversation_history and len(conversation_history) > 0:
-        try:
-            if llm_provider == "gpt":
-                from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
-                annotations = gpt_generate_transcript_annotations(conversation_history=conversation_history, model_id=llm_model)
-            else:
-                from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
-                annotations = gemini_generate_transcript_annotations(conversation_history=conversation_history, model_id=llm_model)
-            
-            # Update conversation history with annotations
-            for i, msg in enumerate(conversation_history):
-                if msg["role"] == "user":
-                    idx_str = str(i)
-                    if idx_str in annotations:
-                        msg["ai_comment"] = annotations[idx_str]
-            
-            # Re-save conversation history with annotations
-            interview.conversation_history = json.dumps(conversation_history)
-            db.commit()
-            logger.info(f"✅ Transcript annotations saved for ended async interview: {interview_id}")
-        except Exception as e:
-            logger.error(f"❌ Failed to generate transcript annotations for ended async interview: {e}")
-    
-    logger.info(f"✅ Marked async interview as completed with assessment: {interview_id}")
-    
+        # Collect data needed for background thread (can't use DB session across threads)
+        _interview_id = interview.interview_id
+        _application_id = application.application_id
+        _provider_prefs_str = getattr(interview, 'provider_preferences', None) or ""
+        _job_title = job_offer.title
+        _job_desc = job_offer.description
+        _cv_text = application.cv_text
+        _required_langs = job_offer.required_languages
+        _start_lang = job_offer.interview_start_language or "English"
+        _custom_questions = job_offer.custom_questions
+        _eval_weights = job_offer.evaluation_weights
+        _conv_history = list(conversation_history)  # copy
+
+        def _run_assessment_background():
+            try:
+                db_bg = SessionLocal()
+                try:
+                    provider_preferences = {}
+                    if _provider_prefs_str:
+                        try:
+                            provider_preferences = json.loads(_provider_prefs_str)
+                        except:
+                            pass
+
+                    llm_provider = "gpt"
+                    llm_model = provider_preferences.get("llm_model") or LLM_PROVIDERS[llm_provider]["default_model"]
+
+                    logger.info(f"📝 [BG] Generating assessment for interview: {_interview_id}")
+
+                    required_languages_list = []
+                    if _required_langs:
+                        try:
+                            required_languages_list = json.loads(_required_langs)
+                        except:
+                            pass
+
+                    interview_context = {
+                        "job_title": _job_title,
+                        "job_offer_description": _job_desc,
+                        "candidate_cv_text": _cv_text,
+                        "required_languages": _required_langs,
+                        "interview_start_language": _start_lang,
+                        "required_languages_list": required_languages_list,
+                        "custom_questions": _custom_questions,
+                        "evaluation_weights": _eval_weights,
+                    }
+
+                    llm_funcs = get_llm_functions(llm_provider)
+                    assessment = llm_funcs["generate_assessment"](
+                        conversation_history=_conv_history,
+                        model_id=llm_model,
+                        interview_context=interview_context,
+                    )
+
+                    recommendation = extract_recommendation(assessment)
+
+                    # Update DB
+                    iv = db_bg.query(DBInterview).filter(DBInterview.interview_id == _interview_id).first()
+                    if iv:
+                        iv.assessment = assessment
+                        iv.recommendation = recommendation
+                        iv.evaluation_scores = json.dumps(extract_detailed_scores(assessment))
+                    app = db_bg.query(DBApplication).filter(DBApplication.application_id == _application_id).first()
+                    if app:
+                        app.interview_assessment = assessment
+                        app.interview_recommendation = recommendation
+                        app.updated_at = datetime.utcnow()
+                    db_bg.commit()
+                    logger.info(f"✅ [BG] Assessment saved for interview: {_interview_id}")
+
+                    # Generate transcript annotations
+                    try:
+                        if llm_provider == "gpt":
+                            from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_ann
+                            annotations = gpt_ann(conversation_history=_conv_history, model_id=llm_model)
+                        else:
+                            from backend.services.language_llm_gemini import generate_transcript_annotations as gem_ann
+                            annotations = gem_ann(conversation_history=_conv_history, model_id=llm_model)
+
+                        for i, msg in enumerate(_conv_history):
+                            if msg["role"] == "user":
+                                idx_str = str(i)
+                                if idx_str in annotations:
+                                    msg["ai_comment"] = annotations[idx_str]
+
+                        if iv:
+                            iv.conversation_history = json.dumps(_conv_history)
+                            db_bg.commit()
+                        logger.info(f"✅ [BG] Transcript annotations saved for interview: {_interview_id}")
+                    except Exception as e:
+                        logger.error(f"❌ [BG] Transcript annotations failed: {e}")
+
+                except Exception as e:
+                    logger.error(f"❌ [BG] Assessment generation failed for {_interview_id}: {e}")
+                    db_bg.rollback()
+                finally:
+                    db_bg.close()
+            except Exception as e:
+                logger.error(f"❌ [BG] Background assessment thread error: {e}")
+
+        import threading
+        threading.Thread(target=_run_assessment_background, daemon=True).start()
+
+    logger.info(f"✅ Marked async interview as completed (assessment generating in background): {interview_id}")
+
     return {
         "interview_id": interview_id,
         "status": "completed",
-        "assessment": assessment,
-        "recommendation": recommendation,
-        "message": "Interview ended successfully"
+        "message": "Interview ended successfully. Assessment is being generated."
     }
 
 
@@ -3953,130 +4042,126 @@ LIVE CONVERSATION RULES:
                         history = conv.get_history_for_llm()
                         interview_context = conv.get_interview_context()
                         config = session_configs.get(conv_id, {})
-                        
-                        # Only generate assessment if we're in the actual interview phase
-                        # (not during pre-check phases)
+
                         current_phase = conv.get_current_phase()
                         is_interview_phase = current_phase == ConversationManager.PHASE_INTERVIEW
-                        
-                        # Generate assessment only if:
-                        # 1. We're in interview phase (not pre-check)
-                        # 2. There's enough conversation history
+
+                        # Send immediate response — candidate doesn't wait for assessment
                         if is_interview_phase and len(history) >= 2:
-                            logger.info(f"📊 Generating assessment for interview phase conversation")
-                            llm_funcs = get_llm_functions(config.get("llm_provider", DEFAULT_LLM_PROVIDER))
-                            assessment = llm_funcs["generate_assessment"](
-                                history, 
-                                model_id=config.get("llm_model", LLM_PROVIDERS[config.get("llm_provider", DEFAULT_LLM_PROVIDER)]["default_model"]),
-                                interview_context=interview_context
-                            )
-                            
-                            # Store assessment in database
-                            try:
-                                db = next(get_db())
-                                
-                                # Extract recommendation and detailed scores
-                                recommendation = extract_recommendation(assessment)
-                                detailed_scores = extract_detailed_scores(assessment)
-                                
-                                application_id = config.get("application_id")
-                                if not application_id:
-                                    evaluation_id = config.get("evaluation_id")
-                                    if evaluation_id:
-                                        # Check in-memory first
-                                        if evaluation_id in cv_evaluations:
-                                            application_id = cv_evaluations[evaluation_id].get("application_id")
-                                        
-                                        # Also check database
-                                        if not application_id:
-                                            cv_eval = db.query(DBCVEvaluation).filter(
-                                                DBCVEvaluation.evaluation_id == evaluation_id
-                                            ).first()
-                                            if cv_eval:
-                                                application_id = cv_eval.application_id
-                                
-                                job_offer_id = config.get("job_offer_id")
-                                candidate_name = conv.get_candidate_name() or config.get("candidate_name")
-                                cv_text = config.get("candidate_cv_text", "")
-                                
-                                # Create or update interview record
-                                interview = None
-                                if application_id:
-                                    # Try to find existing interview for this application
-                                    interview = db.query(DBInterview).filter(
-                                        DBInterview.application_id == application_id
-                                    ).order_by(DBInterview.created_at.desc()).first()
-                                
-                                if not interview:
-                                    # Create new interview record
-                                    interview = DBInterview(
-                                        application_id=application_id,
-                                        job_offer_id=job_offer_id or "",
-                                        candidate_name=candidate_name,
-                                        cv_text=cv_text[:5000] if cv_text else None,  # Store first 5000 chars
-                                        status="completed",
-                                        assessment=assessment,
-                                        recommendation=recommendation,
-                                        evaluation_scores=json.dumps(detailed_scores),
-                                        conversation_history=json.dumps(history),
-                                        completed_at=datetime.now()
-                                    )
-                                    db.add(interview)
-                                else:
-                                    # Update existing interview
-                                    interview.status = "completed"
-                                    interview.assessment = assessment
-                                    interview.recommendation = recommendation
-                                    interview.evaluation_scores = json.dumps(detailed_scores)
-                                    interview.conversation_history = json.dumps(history)
-                                    interview.completed_at = datetime.now()
-                                
-                                # Update application if it exists
-                                if application_id:
-                                    application = db.query(DBApplication).filter(
-                                        DBApplication.application_id == application_id
-                                    ).first()
-                                    if application:
-                                        application.interview_completed_at = datetime.now()
-                                        application.interview_assessment = assessment
-                                        application.interview_recommendation = recommendation
-                                        application.updated_at = datetime.now()
-                                
-                                db.commit()
-                                logger.info(f"✅ Interview assessment stored: interview_id={interview.interview_id}, recommendation={recommendation}")
-                                
-                                # Generate transcript annotations (AI feedback per user message)
-                                try:
-                                    llm_provider_rt = config.get("llm_provider", DEFAULT_LLM_PROVIDER)
-                                    llm_model_rt = config.get("llm_model", LLM_PROVIDERS[llm_provider_rt]["default_model"])
-                                    if llm_provider_rt == "gpt" or llm_provider_rt == "openai":
-                                        from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
-                                        annotations = gpt_generate_transcript_annotations(conversation_history=history, model_id=llm_model_rt)
-                                    else:
-                                        from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
-                                        annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model_rt)
-                                    
-                                    for i, msg in enumerate(history):
-                                        if msg["role"] == "user":
-                                            idx_str = str(i)
-                                            if idx_str in annotations:
-                                                msg["ai_comment"] = annotations[idx_str]
-                                    
-                                    interview.conversation_history = json.dumps(history)
-                                    db.commit()
-                                    logger.info(f"✅ Transcript annotations saved for real-time interview: {interview.interview_id}")
-                                except Exception as e:
-                                    logger.error(f"❌ Failed to generate transcript annotations for real-time interview: {e}")
-                                
-                            except Exception as e:
-                                logger.error(f"❌ Error storing interview assessment: {e}")
-                                db.rollback() if 'db' in locals() else None
-                            
-                            # Send neutral message to candidate (assessment is stored in DB for admin)
                             await websocket.send_json({
                                 "type": "assessment",
                                 "assessment": "**Interview Completed**\n\nThank you for your time! Our HR team will review your application and get back to you soon.\n\nWe appreciate your interest in this position."
                             })
+
+                            # Run assessment + annotations in background thread
+                            _history = list(history)
+                            _ctx = dict(interview_context) if interview_context else {}
+                            _config = dict(config)
+                            _conv_id = conv_id
+                            _candidate_name = conv.get_candidate_name() or config.get("candidate_name")
+
+                            def _run_classic_assessment_bg():
+                                try:
+                                    db_bg = SessionLocal()
+                                    try:
+                                        llm_prov = _config.get("llm_provider", DEFAULT_LLM_PROVIDER)
+                                        llm_mod = _config.get("llm_model", LLM_PROVIDERS[llm_prov]["default_model"])
+                                        llm_funcs_bg = get_llm_functions(llm_prov)
+
+                                        assessment = llm_funcs_bg["generate_assessment"](
+                                            _history, model_id=llm_mod, interview_context=_ctx
+                                        )
+                                        recommendation = extract_recommendation(assessment)
+                                        detailed_scores = extract_detailed_scores(assessment)
+
+                                        application_id = _config.get("application_id")
+                                        if not application_id:
+                                            evaluation_id = _config.get("evaluation_id")
+                                            if evaluation_id:
+                                                if evaluation_id in cv_evaluations:
+                                                    application_id = cv_evaluations[evaluation_id].get("application_id")
+                                                if not application_id:
+                                                    cv_eval = db_bg.query(DBCVEvaluation).filter(
+                                                        DBCVEvaluation.evaluation_id == evaluation_id
+                                                    ).first()
+                                                    if cv_eval:
+                                                        application_id = cv_eval.application_id
+
+                                        job_offer_id = _config.get("job_offer_id")
+                                        cv_text = _config.get("candidate_cv_text", "")
+
+                                        interview_rec = None
+                                        if application_id:
+                                            interview_rec = db_bg.query(DBInterview).filter(
+                                                DBInterview.application_id == application_id
+                                            ).order_by(DBInterview.created_at.desc()).first()
+
+                                        if not interview_rec:
+                                            interview_rec = DBInterview(
+                                                application_id=application_id,
+                                                job_offer_id=job_offer_id or "",
+                                                candidate_name=_candidate_name,
+                                                cv_text=cv_text[:5000] if cv_text else None,
+                                                status="completed",
+                                                assessment=assessment,
+                                                recommendation=recommendation,
+                                                evaluation_scores=json.dumps(detailed_scores),
+                                                conversation_history=json.dumps(_history),
+                                                completed_at=datetime.now()
+                                            )
+                                            db_bg.add(interview_rec)
+                                        else:
+                                            interview_rec.status = "completed"
+                                            interview_rec.assessment = assessment
+                                            interview_rec.recommendation = recommendation
+                                            interview_rec.evaluation_scores = json.dumps(detailed_scores)
+                                            interview_rec.conversation_history = json.dumps(_history)
+                                            interview_rec.completed_at = datetime.now()
+
+                                        if application_id:
+                                            app = db_bg.query(DBApplication).filter(
+                                                DBApplication.application_id == application_id
+                                            ).first()
+                                            if app:
+                                                app.interview_completed_at = datetime.now()
+                                                app.interview_assessment = assessment
+                                                app.interview_recommendation = recommendation
+                                                app.updated_at = datetime.now()
+
+                                        db_bg.commit()
+                                        logger.info(f"✅ [BG] Classic interview assessment stored: {interview_rec.interview_id}")
+
+                                        # Generate transcript annotations
+                                        try:
+                                            if llm_prov == "gpt" or llm_prov == "openai":
+                                                from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_ann
+                                                annotations = gpt_ann(conversation_history=_history, model_id=llm_mod)
+                                            else:
+                                                from backend.services.language_llm_gemini import generate_transcript_annotations as gem_ann
+                                                annotations = gem_ann(conversation_history=_history, model_id=llm_mod)
+
+                                            for i, msg in enumerate(_history):
+                                                if msg["role"] == "user":
+                                                    idx_str = str(i)
+                                                    if idx_str in annotations:
+                                                        msg["ai_comment"] = annotations[idx_str]
+
+                                            interview_rec.conversation_history = json.dumps(_history)
+                                            db_bg.commit()
+                                            logger.info(f"✅ [BG] Transcript annotations saved: {interview_rec.interview_id}")
+                                        except Exception as e:
+                                            logger.error(f"❌ [BG] Transcript annotations failed: {e}")
+
+                                    except Exception as e:
+                                        logger.error(f"❌ [BG] Classic assessment error: {e}")
+                                        db_bg.rollback()
+                                    finally:
+                                        db_bg.close()
+                                except Exception as e:
+                                    logger.error(f"❌ [BG] Classic assessment thread error: {e}")
+
+                            import threading
+                            threading.Thread(target=_run_classic_assessment_bg, daemon=True).start()
                         elif not is_interview_phase:
                             logger.warning(f"⚠️ Interview ended during {current_phase} phase - no assessment generated")
                             await websocket.send_json({
@@ -4122,11 +4207,16 @@ LIVE CONVERSATION RULES:
                     
                     # Create streaming STT session
                     if is_streaming_stt_provider(config.get("stt_provider")):
-                        logger.info(f"🎤 Starting streaming STT session for {conversation_id}")
-                        
+                        # Determine STT language from conversation/job offer
+                        conv = active_conversations.get(conversation_id)
+                        stt_lang = "en"
+                        if conv and conv.interview_start_language:
+                            stt_lang = get_language_code(conv.interview_start_language) or "en"
+                        logger.info(f"🎤 Starting streaming STT session for {conversation_id} (language={stt_lang})")
+
                         stt_session = ElevenLabsSTTStreaming(
                             model_id="scribe_v2_realtime",
-                            language="en",
+                            language=stt_lang,
                         )
                         
                         if await stt_session.connect():

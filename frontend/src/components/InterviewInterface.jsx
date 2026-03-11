@@ -23,29 +23,20 @@ class PCMPlayer {
     this.nextTime = 0
     this.sources = []
     this.gainNode = null
-    this.pendingChunks = []
-    this.ready = false
+    this.preBuffer = []       // Accumulate chunks before playing
+    this.preBufferSamples = 0
+    this.buffering = true     // Pre-buffering until we have enough data
+    this.MIN_BUFFER = 9600    // 400ms at 24kHz — accumulate before first play
   }
 
   init() {
     if (this.ctx) return
-    this.ctx = new AudioContext({ sampleRate: 24000 })
+    this.ctx = new AudioContext()
     this.gainNode = this.ctx.createGain()
     this.gainNode.connect(this.ctx.destination)
-    // Resume AudioContext (browser requires user gesture — by now user clicked Start)
-    const resumePromise = this.ctx.state === 'suspended' ? this.ctx.resume() : Promise.resolve()
-    resumePromise.then(() => {
-      this.ready = true
-      // Play any chunks that arrived while we were resuming
-      // Add warmup offset so the audio pipeline has time to start outputting
-      if (this.pendingChunks.length > 0) {
-        this.nextTime = this.ctx.currentTime + 0.2
-        for (const chunk of this.pendingChunks) {
-          this._playChunk(chunk)
-        }
-        this.pendingChunks = []
-      }
-    })
+    if (this.ctx.state === 'suspended') {
+      this.ctx.resume()
+    }
   }
 
   feed(pcmBase64) {
@@ -58,34 +49,43 @@ class PCMPlayer {
     const float32 = new Float32Array(int16.length)
     for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0
 
-    if (!this.ready) {
-      // Queue chunks until AudioContext is resumed
-      this.pendingChunks.push(float32)
+    if (this.buffering) {
+      // Accumulate chunks until we have ~400ms of audio
+      this.preBuffer.push(float32)
+      this.preBufferSamples += float32.length
+      if (this.preBufferSamples >= this.MIN_BUFFER) {
+        this.buffering = false
+        // Schedule all buffered chunks starting slightly in the future
+        this.nextTime = this.ctx.currentTime + 0.05
+        for (const chunk of this.preBuffer) {
+          this._schedule(chunk)
+        }
+        this.preBuffer = []
+        this.preBufferSamples = 0
+      }
       return
     }
-    this._playChunk(float32)
+    this._schedule(float32)
   }
 
-  _playChunk(float32) {
-    const buffer = this.ctx.createBuffer(1, float32.length, 24000)
-    buffer.getChannelData(0).set(float32)
+  _schedule(float32) {
+    const buf = this.ctx.createBuffer(1, float32.length, 24000)
+    buf.getChannelData(0).set(float32)
 
-    const source = this.ctx.createBufferSource()
-    source.buffer = buffer
-    source.connect(this.gainNode)
+    const src = this.ctx.createBufferSource()
+    src.buffer = buf
+    src.connect(this.gainNode)
 
     const now = this.ctx.currentTime
-    // If nextTime is in the past or zero, this is the start of a new utterance.
-    // Add 200ms warmup so the audio pipeline is ready before samples reach the speaker.
     if (this.nextTime < now) {
-      this.nextTime = now + 0.2
+      this.nextTime = now + 0.05
     }
-    source.start(this.nextTime)
-    this.nextTime = this.nextTime + buffer.duration
+    src.start(this.nextTime)
+    this.nextTime += buf.duration
 
-    this.sources.push(source)
-    source.onended = () => {
-      const idx = this.sources.indexOf(source)
+    this.sources.push(src)
+    src.onended = () => {
+      const idx = this.sources.indexOf(src)
       if (idx >= 0) this.sources.splice(idx, 1)
     }
   }
@@ -95,12 +95,14 @@ class PCMPlayer {
       try { s.stop() } catch {}
     }
     this.sources = []
-    this.pendingChunks = []
+    this.preBuffer = []
+    this.preBufferSamples = 0
+    this.buffering = true
     this.nextTime = 0
   }
 
   isPlaying() {
-    return this.sources.length > 0
+    return this.sources.length > 0 || this.preBuffer.length > 0
   }
 
   close() {
@@ -108,7 +110,6 @@ class PCMPlayer {
     if (this.ctx) {
       this.ctx.close().catch(() => {})
       this.ctx = null
-      this.ready = false
     }
   }
 }
@@ -116,12 +117,12 @@ class PCMPlayer {
 // Voice Activity Detection settings - Optimized for real-time conversation
 const SILENCE_THRESHOLD = 30  // Volume below this = silence
 const MIN_SPEECH_VOLUME = 35  // Minimum volume to consider as actual speech (filters ambient noise)
-const SILENCE_DURATION = 1200  // 1.2s of silence before stopping — fast turnover
+const SILENCE_DURATION = 2500  // 2.5s of silence before stopping — gives candidate time to think
 const SPEECH_MIN_DURATION = 400  // Minimum 400ms of speech to be valid
 const MAX_RECORDING_DURATION = 60000  // 60 seconds max per answer
 const RESPONSE_DEBOUNCE_MS = 1000  // Prevent processing duplicate responses within 1 second
-const FORCE_STOP_AFTER_MS = 30000  // Failsafe: force stop recording after 30 seconds
-const LOW_ACTIVITY_TIMEOUT_MS = 5000  // If no strong speech detected for 5 seconds, stop
+const FORCE_STOP_AFTER_MS = 45000  // Failsafe: force stop recording after 45 seconds
+const LOW_ACTIVITY_TIMEOUT_MS = 8000  // If no strong speech detected for 8 seconds, stop
 
 function InterviewInterface({ interview, onClose }) {
   const [connected, setConnected] = useState(false)

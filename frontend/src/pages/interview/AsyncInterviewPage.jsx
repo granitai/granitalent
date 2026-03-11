@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import axios from 'axios'
 import AsynchronousInterviewInterface from '../../components/AsynchronousInterviewInterface'
-import { Loader2, ArrowLeft } from 'lucide-react'
+import { Loader2, ArrowLeft, CheckCircle } from 'lucide-react'
 
 const API_BASE_URL = '/api'
 
@@ -12,6 +12,7 @@ export default function AsyncInterviewPage() {
   const [interview, setInterview] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [alreadyCompleted, setAlreadyCompleted] = useState(false)
 
   const interviewId = searchParams.get('interview_id')
   const email = searchParams.get('email')
@@ -33,6 +34,12 @@ export default function AsyncInterviewPage() {
         params: { email: email.trim() }
       })
 
+      if (response.data.status === 'completed') {
+        setAlreadyCompleted(true)
+        setLoading(false)
+        return
+      }
+
       const interviewMode = response.data.job_offer?.interview_mode || 'realtime'
       if (interviewMode !== 'asynchronous') {
         setError('This interview is not in asynchronous mode.')
@@ -52,6 +59,21 @@ export default function AsyncInterviewPage() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50">
         <Loader2 className="h-8 w-8 animate-spin text-brand-500" />
+      </div>
+    )
+  }
+
+  if (alreadyCompleted) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4">
+        <div className="card p-8 text-center max-w-md">
+          <CheckCircle className="mx-auto h-12 w-12 text-emerald-500" />
+          <h2 className="mt-4 text-xl font-semibold text-slate-900">Interview Already Completed</h2>
+          <p className="mt-2 text-sm text-slate-500">This interview has already been completed. Thank you for your participation!</p>
+          <button onClick={() => navigate('/jobs')} className="btn-secondary mt-6">
+            <ArrowLeft className="h-4 w-4" /> Back
+          </button>
+        </div>
       </div>
     )
   }

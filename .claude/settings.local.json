@@ -10,7 +10,13 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('backend/main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(echo \"Checking Traefik network\" && docker network ls --format \"{{.Name}}\" 2>/dev/null || true)",
       "Bash(docker network:*)",
-      "Bash(docker inspect:*)"
+      "Bash(docker inspect:*)",
+      "Bash(grep -r \"s3\\\\|S3\\\\|boto\\\\|minio\\\\|cloudinary\\\\|aws\" \"/c/Users/Otmane/Desktop/Workspace/Projets/granitalent/backend/\" --include=\"*.py\" 2>/dev/null | head -20)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('backend/migrate_db.py', encoding='utf-8'\\).read\\(\\)\\); print\\('migrate OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('backend/models/db_models.py', encoding='utf-8'\\).read\\(\\)\\); print\\('models OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('backend/migrate_db.py', encoding='utf-8'\\).read\\(\\)\\); print\\('migrate OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('backend/models/db_models.py', encoding='utf-8'\\).read\\(\\)\\); print\\('models OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('backend/services/gemini_live.py', encoding='utf-8'\\).read\\(\\)\\); print\\('gemini_live OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('backend/services/storage.py', encoding='utf-8'\\).read\\(\\)\\); print\\('storage OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('backend/services/elevenlabs_stt.py', doraise=True\\); print\\('elevenlabs_stt.py OK'\\)\" 2>&1)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('backend/main.py', doraise=True\\); print\\('main.py OK'\\)\" 2>&1)"
     ]
   }
 }

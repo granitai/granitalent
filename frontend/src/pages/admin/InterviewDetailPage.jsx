@@ -5,7 +5,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import StatusBadge from '../../components/shared/StatusBadge'
 import { formatDateTime, parseJSON } from '../../lib/utils'
 import { cn } from '../../lib/utils'
-import { ArrowLeft, FileText, MessageSquare, Volume2, Loader2, Bot, User } from 'lucide-react'
+import { ArrowLeft, FileText, MessageSquare, Volume2, Loader2, Bot, User, AlertTriangle } from 'lucide-react'
 
 export default function InterviewDetailPage() {
   const { id } = useParams()
@@ -15,10 +15,27 @@ export default function InterviewDetailPage() {
   const [activeTab, setActiveTab] = useState('assessment')
   const [recordingUrl, setRecordingUrl] = useState(null)
   const [loadingRecording, setLoadingRecording] = useState(false)
+  const [videoUrl, setVideoUrl] = useState(null)
 
   useEffect(() => {
-    return () => { if (recordingUrl) URL.revokeObjectURL(recordingUrl) }
-  }, [recordingUrl])
+    return () => {
+      if (recordingUrl) URL.revokeObjectURL(recordingUrl)
+      if (videoUrl) URL.revokeObjectURL(videoUrl)
+    }
+  }, [recordingUrl, videoUrl])
+
+  // Load video via authenticated fetch
+  useEffect(() => {
+    if (activeTab === 'recording' && interview?.recording_video && !videoUrl) {
+      const token = localStorage.getItem('admin_token')
+      fetch(`/api/admin/interviews/${interview.interview_id}/video`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+        .then(res => res.ok ? res.blob() : null)
+        .then(blob => { if (blob) setVideoUrl(URL.createObjectURL(blob)) })
+        .catch(() => {})
+    }
+  }, [activeTab, interview?.interview_id])
 
   const loadRecording = async () => {
     if (!interview?.has_recording || loadingRecording) return
@@ -82,9 +99,17 @@ export default function InterviewDetailPage() {
                     <div className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-full', msg.role === 'assistant' ? 'bg-brand-100 text-brand-700' : 'bg-slate-100 text-slate-600')}>
                       {msg.role === 'assistant' ? <Bot className="h-4 w-4" /> : <User className="h-4 w-4" />}
                     </div>
-                    <div className={cn('max-w-[75%] rounded-xl px-4 py-3', msg.role === 'assistant' ? 'bg-slate-50 text-slate-700' : 'bg-brand-50 text-brand-900')}>
-                      <p className="text-xs font-medium text-slate-500">{msg.role === 'assistant' ? 'AI Interviewer' : interview.candidate.name}</p>
-                      <p className="mt-1 text-sm">{msg.content}</p>
+                    <div className={cn('max-w-[75%]', msg.role === 'assistant' ? '' : 'flex flex-col items-end')}>
+                      <div className={cn('rounded-xl px-4 py-3', msg.role === 'assistant' ? 'bg-slate-50 text-slate-700' : 'bg-brand-50 text-brand-900')}>
+                        <p className="text-xs font-medium text-slate-500">{msg.role === 'assistant' ? 'AI Interviewer' : interview.candidate.name}</p>
+                        <p className="mt-1 text-sm">{msg.content}</p>
+                      </div>
+                      {msg.ai_comment && (
+                        <div className="mt-1.5 flex items-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 max-w-full">
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+                          <p className="text-xs text-amber-800">{msg.ai_comment}</p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -95,7 +120,7 @@ export default function InterviewDetailPage() {
           {activeTab === 'recording' && (
             <div>
               {interview.recording_video && (
-                <div className="mb-6"><h3 className="mb-3 text-sm font-semibold text-slate-900">Video Recording</h3><div className="overflow-hidden rounded-lg bg-black" style={{ maxWidth: 640 }}><video controls className="w-full" src={`/uploads/${interview.recording_video}`} /></div></div>
+                <div className="mb-6"><h3 className="mb-3 text-sm font-semibold text-slate-900">Video Recording</h3><div className="overflow-hidden rounded-lg bg-black" style={{ maxWidth: 640 }}>{videoUrl ? <video controls className="w-full" src={videoUrl} /> : <div className="flex items-center justify-center p-8 text-white"><Loader2 className="h-6 w-6 animate-spin" /></div>}</div></div>
               )}
               {interview.audio_segments?.length > 0 ? (
                 <div><h3 className="mb-3 text-sm font-semibold text-slate-900">Audio Segments</h3><div className="space-y-3">{interview.audio_segments.map((seg, idx) => {

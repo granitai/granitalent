@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useApplication, useSelectApplication, useRejectApplication, useOverrideApplication, useSendInterview } from '../../hooks/useApplications'
 import PageHeader from '../../components/shared/PageHeader'
@@ -166,10 +166,36 @@ export default function ApplicationDetailPage() {
             </div>
           )}
 
-          {app.cv_text && (
+          {(app.cv_text || app.cv_file_available) && (
             <div className="card p-6">
-              <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><FileText className="h-4 w-4 text-slate-500" />CV Text</h3>
-              <div className="mt-3 max-h-64 overflow-y-auto rounded-lg bg-slate-50 p-4"><pre className="whitespace-pre-wrap font-sans text-xs text-slate-600">{app.cv_text.substring(0, 3000)}{app.cv_text.length > 3000 ? '...' : ''}</pre></div>
+              <div className="flex items-center justify-between">
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><FileText className="h-4 w-4 text-slate-500" />CV</h3>
+                {app.cv_file_available && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        const token = localStorage.getItem('admin_token')
+                        const res = await fetch(`/api/admin/applications/${app.application_id}/cv-file`, {
+                          headers: { Authorization: `Bearer ${token}` }
+                        })
+                        if (!res.ok) throw new Error('Failed to fetch CV')
+                        const blob = await res.blob()
+                        const url = URL.createObjectURL(blob)
+                        window.open(url, '_blank')
+                      } catch (err) {
+                        toast.error('Failed to load CV file')
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-700 hover:bg-brand-100 transition-colors"
+                  >
+                    <FileText className="h-3.5 w-3.5" />
+                    Preview PDF
+                  </button>
+                )}
+              </div>
+              {app.cv_text && (
+                <div className="mt-3 max-h-64 overflow-y-auto rounded-lg bg-slate-50 p-4"><pre className="whitespace-pre-wrap font-sans text-xs text-slate-600">{app.cv_text.substring(0, 3000)}{app.cv_text.length > 3000 ? '...' : ''}</pre></div>
+              )}
             </div>
           )}
         </div>

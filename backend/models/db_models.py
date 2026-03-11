@@ -75,6 +75,7 @@ class Application(Base):
     cover_letter_filename = Column(String)  # Filename if cover letter is uploaded as document
     cv_text = Column(Text, nullable=False)  # Parsed CV text
     cv_filename = Column(String)
+    cv_file_path = Column(String, nullable=True)  # Path to stored PDF file (e.g. "cvs/app_xxx.pdf")
     
     # AI Evaluation
     ai_status = Column(String, default="pending")  # "approved", "rejected", "pending"

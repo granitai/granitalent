@@ -34,29 +34,30 @@ MAX_RETRIES = 3
 RETRY_DELAY = 1.0  # seconds
 
 
-def speech_to_text(audio_bytes: bytes, audio_format: str = "webm", model_id: Optional[str] = None) -> str:
+def speech_to_text(audio_bytes: bytes, audio_format: str = "webm", model_id: Optional[str] = None, language_code: Optional[str] = None) -> str:
     """
     Convert speech to text using ElevenLabs STT API.
-    
+
     Args:
         audio_bytes: The audio data as bytes
         audio_format: The format of the audio (webm, mp3, wav, etc.)
         model_id: The STT model to use (scribe_v1 or scribe_v2). Defaults to config.
-    
+        language_code: ISO language code (e.g. "fr", "en", "ar"). If provided, forces language detection.
+
     Returns:
         Transcribed text
-    
+
     Raises:
         Exception: If STT fails after all retries
     """
     # Use provided model or fall back to config default
     if model_id is None:
         model_id = STT_MODEL
-    
-    logger.info(f"🎤 STT: Using model '{model_id}' for transcription")
-    
+
+    logger.info(f"🎤 STT: Using model '{model_id}' for transcription (language={language_code or 'auto'})")
+
     last_error = None
-    
+
     for attempt in range(MAX_RETRIES):
         try:
             # Get client with current API key
@@ -64,13 +65,18 @@ def speech_to_text(audio_bytes: bytes, audio_format: str = "webm", model_id: Opt
             # Wrap audio bytes in BytesIO for the API (fresh copy for each attempt)
             audio_file = BytesIO(audio_bytes)
             audio_file.name = f"audio.{audio_format}"
-            
-            # Transcribe audio using the official library
-            result = client.speech_to_text.convert(
+
+            # Build kwargs for the API call
+            convert_kwargs = dict(
                 file=audio_file,
-                model_id=model_id
+                model_id=model_id,
             )
-            
+            if language_code:
+                convert_kwargs["language_code"] = language_code
+
+            # Transcribe audio using the official library
+            result = client.speech_to_text.convert(**convert_kwargs)
+
             transcribed_text = result.text if result.text else ""
             logger.info(f"📝 STT: Transcribed text: '{transcribed_text[:50]}...' " if len(transcribed_text) > 50 else f"📝 STT: Transcribed text: '{transcribed_text}'")
             

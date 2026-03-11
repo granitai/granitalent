@@ -17,7 +17,6 @@ services:
     volumes:
       - db-data:/app/data
       - ./logs:/app/logs
-      - uploads-data:/app/uploads
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
@@ -74,7 +73,6 @@ services:
 
 volumes:
   db-data:
-  uploads-data:
 
 networks:
   proxy:
