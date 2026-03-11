@@ -28,26 +28,28 @@ services:
       - internal
     labels:
       - "traefik.enable=true"
+      # Single service definition for all backend routers
+      - "traefik.http.services.granitalent-backend.loadbalancer.server.port=8000"
       # API routes
       - "traefik.http.routers.granitalent-api.rule=Host(`talents.granitai.com`) && PathPrefix(`/api`)"
       - "traefik.http.routers.granitalent-api.entrypoints=websecure"
       - "traefik.http.routers.granitalent-api.tls.certresolver=letsencrypt"
-      - "traefik.http.services.granitalent-api.loadbalancer.server.port=8000"
+      - "traefik.http.routers.granitalent-api.service=granitalent-backend"
       # WebSocket route
       - "traefik.http.routers.granitalent-ws.rule=Host(`talents.granitai.com`) && PathPrefix(`/ws`)"
       - "traefik.http.routers.granitalent-ws.entrypoints=websecure"
       - "traefik.http.routers.granitalent-ws.tls.certresolver=letsencrypt"
-      - "traefik.http.services.granitalent-ws.loadbalancer.server.port=8000"
+      - "traefik.http.routers.granitalent-ws.service=granitalent-backend"
       # Uploads route
       - "traefik.http.routers.granitalent-uploads.rule=Host(`talents.granitai.com`) && PathPrefix(`/uploads`)"
       - "traefik.http.routers.granitalent-uploads.entrypoints=websecure"
       - "traefik.http.routers.granitalent-uploads.tls.certresolver=letsencrypt"
-      - "traefik.http.services.granitalent-uploads.loadbalancer.server.port=8000"
+      - "traefik.http.routers.granitalent-uploads.service=granitalent-backend"
       # API docs route
       - "traefik.http.routers.granitalent-docs.rule=Host(`talents.granitai.com`) && PathPrefix(`/docs`, `/openapi.json`)"
       - "traefik.http.routers.granitalent-docs.entrypoints=websecure"
       - "traefik.http.routers.granitalent-docs.tls.certresolver=letsencrypt"
-      - "traefik.http.services.granitalent-docs.loadbalancer.server.port=8000"
+      - "traefik.http.routers.granitalent-docs.service=granitalent-backend"
 
   frontend:
     build:
