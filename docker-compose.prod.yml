@@ -28,6 +28,7 @@ services:
       - internal
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
       # Single service definition for all backend routers
       - "traefik.http.services.granitalent-backend.loadbalancer.server.port=8000"
       # API routes
@@ -66,6 +67,7 @@ services:
       - internal
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
       # Frontend catch-all (lowest priority)
       - "traefik.http.routers.granitalent-frontend.rule=Host(`talents.granitai.com`)"
       - "traefik.http.routers.granitalent-frontend.entrypoints=websecure"
