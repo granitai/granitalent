@@ -1,12 +1,6 @@
-version: '3.8'
-
 # Production Docker Compose for VPS deployment
+# Uses the existing Traefik reverse proxy on the "proxy" network
 # Usage: docker-compose -f docker-compose.prod.yml up -d --build
-#
-# First-time SSL setup:
-#   1. Run: docker-compose -f docker-compose.prod.yml up -d nginx certbot
-#   2. Run: docker-compose -f docker-compose.prod.yml exec certbot certbot certonly --webroot -w /var/www/certbot -d talents.granitai.com --email your-email@example.com --agree-tos --no-eff-email
-#   3. Restart: docker-compose -f docker-compose.prod.yml restart nginx
 
 services:
   backend:
@@ -31,7 +25,30 @@ services:
       timeout: 10s
       retries: 3
     networks:
-      - granitalent-net
+      - proxy
+      - internal
+    labels:
+      - "traefik.enable=true"
+      # API routes
+      - "traefik.http.routers.granitalent-api.rule=Host(`talents.granitai.com`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.granitalent-api.entrypoints=websecure"
+      - "traefik.http.routers.granitalent-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.granitalent-api.loadbalancer.server.port=8000"
+      # WebSocket route
+      - "traefik.http.routers.granitalent-ws.rule=Host(`talents.granitai.com`) && PathPrefix(`/ws`)"
+      - "traefik.http.routers.granitalent-ws.entrypoints=websecure"
+      - "traefik.http.routers.granitalent-ws.tls.certresolver=letsencrypt"
+      - "traefik.http.services.granitalent-ws.loadbalancer.server.port=8000"
+      # Uploads route
+      - "traefik.http.routers.granitalent-uploads.rule=Host(`talents.granitai.com`) && PathPrefix(`/uploads`)"
+      - "traefik.http.routers.granitalent-uploads.entrypoints=websecure"
+      - "traefik.http.routers.granitalent-uploads.tls.certresolver=letsencrypt"
+      - "traefik.http.services.granitalent-uploads.loadbalancer.server.port=8000"
+      # API docs route
+      - "traefik.http.routers.granitalent-docs.rule=Host(`talents.granitai.com`) && PathPrefix(`/docs`, `/openapi.json`)"
+      - "traefik.http.routers.granitalent-docs.entrypoints=websecure"
+      - "traefik.http.routers.granitalent-docs.tls.certresolver=letsencrypt"
+      - "traefik.http.services.granitalent-docs.loadbalancer.server.port=8000"
 
   frontend:
     build:
@@ -44,42 +61,23 @@ services:
       - backend
     restart: unless-stopped
     networks:
-      - granitalent-net
-
-  nginx:
-    image: nginx:alpine
-    container_name: granitalent-nginx
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      - certbot-webroot:/var/www/certbot:ro
-      - certbot-certs:/etc/letsencrypt:ro
-    depends_on:
-      - frontend
-      - backend
-    restart: unless-stopped
-    networks:
-      - granitalent-net
-
-  certbot:
-    image: certbot/certbot
-    container_name: granitalent-certbot
-    volumes:
-      - certbot-webroot:/var/www/certbot
-      - certbot-certs:/etc/letsencrypt
-    # Auto-renew every 12 hours
-    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done'"
-    networks:
-      - granitalent-net
+      - proxy
+      - internal
+    labels:
+      - "traefik.enable=true"
+      # Frontend catch-all (lowest priority)
+      - "traefik.http.routers.granitalent-frontend.rule=Host(`talents.granitai.com`)"
+      - "traefik.http.routers.granitalent-frontend.entrypoints=websecure"
+      - "traefik.http.routers.granitalent-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.granitalent-frontend.priority=1"
+      - "traefik.http.services.granitalent-frontend.loadbalancer.server.port=80"
 
 volumes:
   db-data:
   uploads-data:
-  certbot-webroot:
-  certbot-certs:
 
 networks:
-  granitalent-net:
+  proxy:
+    external: true
+  internal:
     driver: bridge
