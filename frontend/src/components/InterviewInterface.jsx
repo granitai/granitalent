@@ -138,14 +138,8 @@ function InterviewInterface({ interview, onClose }) {
   const [timeRemaining, setTimeRemaining] = useState(null) // in seconds
   const [timeLimitMinutes, setTimeLimitMinutes] = useState(null)
 
-  // Provider/Model selection state
+  // Provider config state
   const [providersConfig, setProvidersConfig] = useState(null)
-  const [ttsProvider, setTtsProvider] = useState('')
-  const [ttsModel, setTtsModel] = useState('')
-  const [sttProvider, setSttProvider] = useState('')
-  const [sttModel, setSttModel] = useState('')
-  const [llmProvider, setLlmProvider] = useState('')
-  const [llmModel, setLlmModel] = useState('')
 
   const wsRef = useRef(null)
   const audioContextRef = useRef(null)
@@ -176,23 +170,23 @@ function InterviewInterface({ interview, onClose }) {
   const isPlayingQueueRef = useRef(false)  // Whether we're currently playing from queue
   const lastStrongSpeechRef = useRef(null)  // Track last strong speech for failsafe
 
-  // Video recording refs
-  const fullInterviewRecorderRef = useRef(null)
-  const fullInterviewChunksRef = useRef([])
-  const fullInterviewStreamRef = useRef(null)
+  // Snapshot capture refs (periodic screenshots for identity verification)
+  const snapshotStreamRef = useRef(null)
+  const snapshotCanvasRef = useRef(null)
+  const snapshotIntervalRef = useRef(null)
+  const snapshotsRef = useRef([])  // array of {timestamp, dataUrl}
   const videoPreviewRef = useRef(null)
 
   // PCM capture refs for streaming STT (avoids server-side WebM→PCM conversion)
   const pcmWorkerRef = useRef(null)
   const pcmBufferRef = useRef([])
 
-  // Gemini Live mode refs
-  const isLiveModeRef = useRef(false)
+  // Gemini Live mode refs (always live mode for real-time)
+  const isLiveModeRef = useRef(true)
   const pcmPlayerRef = useRef(null)
   const liveFlushIntervalRef = useRef(null)
-  const [liveMode, setLiveMode] = useState(false)
   const [liveVoice, setLiveVoice] = useState('Kore')
-  const [liveModel, setLiveModel] = useState('gemini-2.5-flash-native-audio-preview-12-2025')
+  const [isUserSpeaking, setIsUserSpeaking] = useState(false)
 
   // Load providers on mount
   useEffect(() => {
@@ -222,111 +216,23 @@ function InterviewInterface({ interview, onClose }) {
 
   const loadProviders = async () => {
     try {
-      updateStatus('Loading providers...', 'connecting')
+      updateStatus('Loading...', 'connecting')
       const response = await axios.get(`${API_BASE_URL}/providers`)
       const config = response.data
       setProvidersConfig(config)
 
-      // Set defaults
-      setTtsProvider(config.defaults.tts_provider)
-      setSttProvider(config.defaults.stt_provider)
-      setLlmProvider(config.defaults.llm_provider)
-
-      // Set default models
-      const ttsDefaultModel = config.tts[config.defaults.tts_provider]?.default_model
-      const sttDefaultModel = config.stt[config.defaults.stt_provider]?.default_model
-      const llmDefaultModel = config.llm[config.defaults.llm_provider]?.default_model
-
-      if (ttsDefaultModel) setTtsModel(ttsDefaultModel)
-      if (sttDefaultModel) setSttModel(sttDefaultModel)
-      if (llmDefaultModel) setLlmModel(llmDefaultModel)
+      // Set default voice from config
+      if (config.gemini_live?.default_voice) {
+        setLiveVoice(config.gemini_live.default_voice)
+      }
 
       updateStatus('Ready to start', '')
     } catch (error) {
       console.error('Failed to load providers:', error)
-      updateStatus('Failed to load providers - using defaults', 'error')
-      // Set fallback defaults
-      setTtsProvider('elevenlabs')
-      setTtsModel('eleven_flash_v2_5')
-      setSttProvider('elevenlabs_streaming')
-      setSttModel('scribe_v2_stream')
-      setLlmProvider('gemini')
-      setLlmModel('gemini-2.5-flash')
-      isStreamingModeRef.current = true
+      updateStatus('Failed to load - using defaults', 'error')
+      setProvidersConfig({ gemini_live: { voices: [{ id: 'Kore', name: 'Kore — Clear & Professional' }], default_voice: 'Kore' } })
     }
   }
-
-  const updateModelOptions = (type) => {
-    if (!providersConfig) return
-
-    let provider, setModel
-    switch (type) {
-      case 'tts':
-        provider = ttsProvider
-        setModel = setTtsModel
-        break
-      case 'stt':
-        provider = sttProvider
-        setModel = setSttModel
-        break
-      case 'llm':
-        provider = llmProvider
-        setModel = setLlmModel
-        break
-      default:
-        return
-    }
-
-    const providerConfig = providersConfig[type]?.[provider]
-    if (providerConfig) {
-      const defaultModel = providerConfig.default_model
-      if (defaultModel) {
-        setModel(defaultModel)
-      }
-
-      // Update streaming mode for STT
-      if (type === 'stt') {
-        isStreamingModeRef.current = provider === 'elevenlabs_streaming'
-        console.log(`🎤 STT Provider: ${provider}, Streaming mode: ${isStreamingModeRef.current}`)
-      }
-    }
-  }
-
-  const handleProviderChange = (type, provider) => {
-    switch (type) {
-      case 'tts':
-        setTtsProvider(provider)
-        break
-      case 'stt':
-        setSttProvider(provider)
-        break
-      case 'llm':
-        setLlmProvider(provider)
-        break
-    }
-    // Update model options will be handled in useEffect
-  }
-
-  useEffect(() => {
-    if (providersConfig && ttsProvider) {
-      updateModelOptions('tts')
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ttsProvider, providersConfig])
-
-  useEffect(() => {
-    if (providersConfig && sttProvider) {
-      updateModelOptions('stt')
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sttProvider, providersConfig])
-
-  useEffect(() => {
-    if (providersConfig && llmProvider) {
-      updateModelOptions('llm')
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [llmProvider, providersConfig])
 
   const cleanupResources = () => {
     if (wsRef.current) {
@@ -339,10 +245,14 @@ function InterviewInterface({ interview, onClose }) {
       mediaStreamRef.current = null
     }
 
-    // Clean up video recording stream
-    if (fullInterviewStreamRef.current) {
-      fullInterviewStreamRef.current.getTracks().forEach(track => track.stop())
-      fullInterviewStreamRef.current = null
+    // Clean up snapshot capture stream
+    if (snapshotIntervalRef.current) {
+      clearInterval(snapshotIntervalRef.current)
+      snapshotIntervalRef.current = null
+    }
+    if (snapshotStreamRef.current) {
+      snapshotStreamRef.current.getTracks().forEach(track => track.stop())
+      snapshotStreamRef.current = null
     }
     if (videoPreviewRef.current) {
       videoPreviewRef.current.srcObject = null
@@ -424,18 +334,19 @@ function InterviewInterface({ interview, onClose }) {
     }, 100) // 100ms flush interval for real-time feel
   }
 
-  // ========== VIDEO RECORDING FUNCTIONS ==========
-  const startFullInterviewRecording = async () => {
+  // ========== SNAPSHOT CAPTURE FUNCTIONS ==========
+  const SNAPSHOT_INTERVAL_MS = 20000  // Capture a snapshot every 20 seconds
+
+  const startSnapshotCapture = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
         video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          frameRate: { ideal: 15, max: 20 }
+          width: { ideal: 320 },
+          height: { ideal: 240 },
+          frameRate: { ideal: 5, max: 10 }
         }
       })
-      fullInterviewStreamRef.current = stream
+      snapshotStreamRef.current = stream
 
       // Show video preview
       if (videoPreviewRef.current) {
@@ -443,88 +354,83 @@ function InterviewInterface({ interview, onClose }) {
         videoPreviewRef.current.muted = true
       }
 
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp8,opus',
-        videoBitsPerSecond: 250000 // Compress to ~250 kbps
-      })
-      fullInterviewRecorderRef.current = mediaRecorder
-      fullInterviewChunksRef.current = []
+      // Create canvas for capturing frames
+      const canvas = document.createElement('canvas')
+      canvas.width = 320
+      canvas.height = 240
+      snapshotCanvasRef.current = canvas
+      snapshotsRef.current = []
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          fullInterviewChunksRef.current.push(event.data)
-        }
-      }
+      // Capture first snapshot immediately
+      captureSnapshot()
 
-      mediaRecorder.start(1000) // Collect data every second
-      console.log('🎥 Started full interview video recording')
+      // Then capture periodically
+      snapshotIntervalRef.current = setInterval(captureSnapshot, SNAPSHOT_INTERVAL_MS)
+      console.log('📸 Started periodic snapshot capture (every 20s)')
     } catch (err) {
-      console.error('Error starting full interview recording:', err)
-      // Don't block interview if video recording fails
+      console.error('Error starting snapshot capture:', err)
+      // Don't block interview if camera fails
     }
   }
 
-  const stopFullInterviewRecording = async () => {
-    return new Promise((resolve) => {
-      if (fullInterviewRecorderRef.current && fullInterviewRecorderRef.current.state !== 'inactive') {
-        fullInterviewRecorderRef.current.onstop = async () => {
-          try {
-            // Process video recording
-            if (fullInterviewChunksRef.current.length > 0) {
-              const videoBlob = new Blob(fullInterviewChunksRef.current, { type: 'video/webm' })
+  const captureSnapshot = () => {
+    const video = videoPreviewRef.current
+    const canvas = snapshotCanvasRef.current
+    if (!video || !canvas || !snapshotStreamRef.current) return
 
-              if (videoBlob.size > 0) {
-                console.log(`🎥 Video recording ready: ${videoBlob.size} bytes`)
+    try {
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.7)
+      snapshotsRef.current.push({
+        timestamp: new Date().toISOString(),
+        dataUrl
+      })
+      console.log(`📸 Snapshot captured (${snapshotsRef.current.length} total)`)
+    } catch (err) {
+      console.error('Error capturing snapshot:', err)
+    }
+  }
 
-                // Upload video
-                const formData = new FormData()
-                formData.append('video_file', videoBlob, 'interview_recording.webm')
-                formData.append('email', interview?.email || interview?.candidate_email || '')
+  const stopSnapshotCapture = async () => {
+    // Stop interval
+    if (snapshotIntervalRef.current) {
+      clearInterval(snapshotIntervalRef.current)
+      snapshotIntervalRef.current = null
+    }
 
-                try {
-                  updateStatus('Uploading interview recording...', 'connecting')
-                  await axios.post(
-                    `${API_BASE_URL}/candidates/interviews/${interview.interview_id}/async/upload-video`,
-                    formData,
-                    {
-                      headers: {
-                        'Content-Type': 'multipart/form-data'
-                      }
-                    }
-                  )
-                  console.log('✅ Video uploaded successfully')
-                } catch (err) {
-                  console.error('Error uploading video:', err)
-                  // Don't fail the whole process if video upload fails
-                }
-              }
-            }
-          } catch (err) {
-            console.error('Error processing interview recording:', err)
+    // Capture one final snapshot
+    captureSnapshot()
+
+    // Upload snapshots
+    if (snapshotsRef.current.length > 0) {
+      try {
+        updateStatus('Uploading verification snapshots...', 'connecting')
+        await axios.post(
+          `${API_BASE_URL}/candidates/interviews/${interview.interview_id}/snapshots`,
+          {
+            email: interview?.email || interview?.candidate_email || '',
+            snapshots: snapshotsRef.current.map(s => ({
+              timestamp: s.timestamp,
+              image: s.dataUrl.split(',')[1]  // Send base64 without data URI prefix
+            }))
           }
-
-          // Clean up stream
-          if (fullInterviewStreamRef.current) {
-            fullInterviewStreamRef.current.getTracks().forEach(track => track.stop())
-            fullInterviewStreamRef.current = null
-          }
-          if (videoPreviewRef.current) {
-            videoPreviewRef.current.srcObject = null
-          }
-
-          resolve()
-        }
-
-        fullInterviewRecorderRef.current.stop()
-      } else {
-        // Recorder wasn't active
-        if (fullInterviewStreamRef.current) {
-          fullInterviewStreamRef.current.getTracks().forEach(track => track.stop())
-          fullInterviewStreamRef.current = null
-        }
-        resolve()
+        )
+        console.log(`✅ ${snapshotsRef.current.length} snapshots uploaded`)
+      } catch (err) {
+        console.error('Error uploading snapshots:', err)
       }
-    })
+    }
+
+    // Clean up stream
+    if (snapshotStreamRef.current) {
+      snapshotStreamRef.current.getTracks().forEach(track => track.stop())
+      snapshotStreamRef.current = null
+    }
+    if (videoPreviewRef.current) {
+      videoPreviewRef.current.srcObject = null
+    }
+    snapshotsRef.current = []
   }
 
   const initAudioContext = async () => {
@@ -598,29 +504,18 @@ function InterviewInterface({ interview, onClose }) {
         updateStatus('Connected', 'connected')
 
         // Start video recording when interview connects
-        startFullInterviewRecording()
+        startSnapshotCapture()
 
-        // Send start interview message
+        // Send start interview message — always Gemini Live mode
         const startMessage = {
           type: 'start_interview',
           interview_id: interview.interview_id,
           application_id: interview.application_id,
-          tts_provider: ttsProvider,
-          tts_model: ttsModel,
-          stt_provider: sttProvider,
-          stt_model: sttModel,
-          llm_provider: llmProvider,
-          llm_model: llmModel,
+          mode: 'gemini_live',
+          gemini_live_voice: liveVoice,
         }
 
-        // Add live mode fields
-        if (isLiveModeRef.current) {
-          startMessage.mode = 'gemini_live'
-          startMessage.gemini_live_model = liveModel
-          startMessage.gemini_live_voice = liveVoice
-        }
-
-        console.log('Sending start interview message:', startMessage)
+        console.log('Starting Gemini Live interview:', startMessage)
         ws.send(JSON.stringify(startMessage))
       }
 
@@ -636,7 +531,7 @@ function InterviewInterface({ interview, onClose }) {
         setError('Connection error. Please try again.')
       }
 
-      ws.onclose = (event) => {
+      ws.onclose = async (event) => {
         console.log('WebSocket closed', event.code, event.reason)
         setConnected(false)
 
@@ -645,6 +540,15 @@ function InterviewInterface({ interview, onClose }) {
           // Normal close - interview completed
           console.log('✅ Interview ended normally:', event.reason)
           updateStatus('Interview completed', 'connected')
+          // Ensure the completed screen shows even if assessment message was missed
+          setAssessment(prev => prev || 'Interview completed.')
+          // Save recording and clean up
+          try {
+            await stopSnapshotCapture()
+          } catch (err) {
+            console.error('Error saving final recording:', err)
+          }
+          cleanupResources()
         } else if (!isEndingInterview && !assessment) {
           // Unexpected close
           updateStatus('Disconnected', 'error')
@@ -801,7 +705,7 @@ function InterviewInterface({ interview, onClose }) {
         setTimeRemaining(null)
         // Upload video BEFORE cleaning up resources (which kills the stream)
         try {
-          await stopFullInterviewRecording()
+          await stopSnapshotCapture()
           console.log('✅ Video recording saved before cleanup')
         } catch (err) {
           console.error('❌ Error saving video recording:', err)
@@ -846,29 +750,22 @@ function InterviewInterface({ interview, onClose }) {
         }
         break
 
+      case 'user_speaking':
+        setIsUserSpeaking(true)
+        break
+
       case 'live_user_transcript':
-        // Buffered transcription of what the user said — update or add
+        // Finalized transcription of what the user said (shown only after user finishes speaking)
+        setIsUserSpeaking(false)
         if (data.text) {
-          setConversation(prev => {
-            // If the last message is a pending user message, replace it
-            if (prev.length > 0 && prev[prev.length - 1].sender === 'user' && prev[prev.length - 1].pending) {
-              const updated = [...prev]
-              updated[updated.length - 1] = { sender: 'user', text: data.text, timestamp: new Date(), pending: true }
-              return updated
-            }
-            // Otherwise add a new pending user message
-            return [...prev, { sender: 'user', text: data.text, timestamp: new Date(), pending: true }]
-          })
+          addMessage('user', data.text)
         }
         break
 
       case 'live_turn_complete':
         isAudioPlayingRef.current = false
+        setIsUserSpeaking(false)
         updateStatus('Live — speak naturally', 'connected')
-        // Finalize any pending user message
-        setConversation(prev => prev.map(msg =>
-          msg.pending ? { ...msg, pending: false } : msg
-        ))
         if (data.text) {
           addMessage('interviewer', data.text)
         }
@@ -881,6 +778,14 @@ function InterviewInterface({ interview, onClose }) {
         }
         isAudioPlayingRef.current = false
         updateStatus('Live — speak naturally', 'connected')
+        break
+
+      case 'interview_ended':
+        // AI called the end_interview function — interview is concluding
+        console.log('🏁 AI ended the interview:', data.reason)
+        updateStatus('Interview ending...', 'connecting')
+        // Wait a moment for the farewell audio to finish playing, then the backend
+        // will send the assessment message which triggers cleanup
         break
 
       case 'error':
@@ -1488,7 +1393,7 @@ function InterviewInterface({ interview, onClose }) {
     }
 
     // Stop video recording and upload
-    await stopFullInterviewRecording()
+    await stopSnapshotCapture()
 
     // Stop countdown timer
     if (countdownIntervalRef.current) {
@@ -1549,139 +1454,10 @@ function InterviewInterface({ interview, onClose }) {
         </div>
       )}
 
-      {!connected && providersConfig && (
+      {/* Voice selector — only before interview starts, hidden once assessment exists */}
+      {!connected && !assessment && providersConfig && (
         <div className="provider-selectors">
-          {/* Preset buttons */}
-          {providersConfig.presets && (
-            <div className="presets-section">
-              <label className="presets-label">Quick Setup</label>
-              <div className="presets-grid">
-                {Object.entries(providersConfig.presets).map(([id, preset]) => (
-                  <button
-                    key={id}
-                    className={`preset-btn ${
-                      preset.mode === 'gemini_live'
-                        ? (liveMode ? 'active' : '')
-                        : (!liveMode &&
-                           ttsProvider === preset.tts_provider &&
-                           ttsModel === preset.tts_model &&
-                           sttProvider === preset.stt_provider &&
-                           llmProvider === preset.llm_provider &&
-                           llmModel === preset.llm_model
-                             ? 'active' : '')
-                    }`}
-                    onClick={() => {
-                      if (preset.mode === 'gemini_live') {
-                        setLiveMode(true)
-                        isLiveModeRef.current = true
-                        if (preset.gemini_live_model) setLiveModel(preset.gemini_live_model)
-                        if (preset.gemini_live_voice) setLiveVoice(preset.gemini_live_voice)
-                      } else {
-                        setLiveMode(false)
-                        isLiveModeRef.current = false
-                        setTtsProvider(preset.tts_provider)
-                        setTtsModel(preset.tts_model)
-                        setSttProvider(preset.stt_provider)
-                        setSttModel(preset.stt_model)
-                        setLlmProvider(preset.llm_provider)
-                        setLlmModel(preset.llm_model)
-                        isStreamingModeRef.current = preset.stt_provider === 'elevenlabs_streaming'
-                      }
-                    }}
-                  >
-                    <span className="preset-name">{preset.name}</span>
-                    <span className="preset-desc">{preset.description}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <details className="advanced-settings">
-            <summary>Advanced Settings</summary>
-            <div className="advanced-grid">
-              <div className="selector-group">
-                <label>TTS Provider</label>
-                <select
-                  value={ttsProvider}
-                  onChange={(e) => handleProviderChange('tts', e.target.value)}
-                  disabled={connected}
-                >
-                  {Object.entries(providersConfig.tts || {}).map(([id, config]) => (
-                    <option key={id} value={id}>{config.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="selector-group">
-                <label>TTS Model</label>
-                <select
-                  value={ttsModel}
-                  onChange={(e) => setTtsModel(e.target.value)}
-                  disabled={connected || !ttsProvider}
-                >
-                  {providersConfig.tts?.[ttsProvider]?.models.map((model) => (
-                    <option key={model.id} value={model.id}>{model.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="selector-group">
-                <label>STT Provider</label>
-                <select
-                  value={sttProvider}
-                  onChange={(e) => handleProviderChange('stt', e.target.value)}
-                  disabled={connected}
-                >
-                  {Object.entries(providersConfig.stt || {}).map(([id, config]) => (
-                    <option key={id} value={id}>{config.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="selector-group">
-                <label>STT Model</label>
-                <select
-                  value={sttModel}
-                  onChange={(e) => setSttModel(e.target.value)}
-                  disabled={connected || !sttProvider}
-                >
-                  {providersConfig.stt?.[sttProvider]?.models.map((model) => (
-                    <option key={model.id} value={model.id}>{model.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="selector-group">
-                <label>LLM Provider</label>
-                <select
-                  value={llmProvider}
-                  onChange={(e) => handleProviderChange('llm', e.target.value)}
-                  disabled={connected}
-                >
-                  {Object.entries(providersConfig.llm || {}).map(([id, config]) => (
-                    <option key={id} value={id}>{config.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="selector-group">
-                <label>LLM Model</label>
-                <select
-                  value={llmModel}
-                  onChange={(e) => setLlmModel(e.target.value)}
-                  disabled={connected || !llmProvider}
-                >
-                  {providersConfig.llm?.[llmProvider]?.models.map((model) => (
-                    <option key={model.id} value={model.id}>{model.name}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </details>
-
-          {/* Voice selector for Gemini Live mode */}
-          {liveMode && providersConfig?.gemini_live && (
+          {providersConfig?.gemini_live && (
             <div className="live-voice-selector">
               <label>AI Voice</label>
               <div className="voice-options">
@@ -1701,115 +1477,88 @@ function InterviewInterface({ interview, onClose }) {
           <button
             className="start-interview-btn"
             onClick={connectWebSocket}
-            disabled={liveMode ? false : (!ttsProvider || !ttsModel || !sttProvider || !sttModel || !llmProvider || !llmModel)}
           >
-            {liveMode ? 'Start Live Interview' : 'Start Interview'}
+            Start Interview
           </button>
         </div>
       )}
 
-      {/* Video Preview */}
-      {connected && (
-        <div className="video-preview-container">
-          <video
-            ref={videoPreviewRef}
-            autoPlay
-            playsInline
-            muted
-            className="video-preview"
-          />
-          <div className="video-recording-badge">
-            <div className="rec-dot"></div>
-            <span>REC</span>
-          </div>
+      {/* Completed screen — full-page thank-you */}
+      {assessment && (
+        <div className="interview-completed-screen">
+          <div className="interview-completed-icon">&#10003;</div>
+          <h2>Interview Completed</h2>
+          <p>Thank you for your participation! Our HR team will carefully review your interview and get back to you soon.</p>
+          <p className="interview-completed-luck">We wish you the best of luck.</p>
+          <button className="interview-completed-btn" onClick={onClose}>
+            Close
+          </button>
         </div>
       )}
 
-      <div className="conversation-area" ref={(el) => {
-        if (el) {
-          el.scrollTop = el.scrollHeight
-        }
-      }}>
-        {conversation.length === 0 && !assessment && (
-          <div className="waiting-message">
-            <p>Waiting for interviewer to start...</p>
-          </div>
-        )}
-
-        {conversation.map((msg, idx) => (
-          <div key={idx} className={`message ${msg.sender}`}>
-            <div className="message-header">
-              {msg.sender === 'user' ? 'You' : 'Interviewer'}
+      {/* Active interview UI — hidden once assessment exists */}
+      {!assessment && (
+        <>
+          {/* Video Preview */}
+          {connected && (
+            <div className="video-preview-container">
+              <video
+                ref={videoPreviewRef}
+                autoPlay
+                playsInline
+                muted
+                className="video-preview"
+              />
+              <div className="video-recording-badge">
+                <div className="rec-dot"></div>
+                <span>REC</span>
+              </div>
             </div>
-            <div className="message-content">
-              {msg.text}
-            </div>
+          )}
+
+          <div className="conversation-area" ref={(el) => {
+            if (el) {
+              el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+            }
+          }}>
+            {conversation.length === 0 && (
+              <div className="waiting-message">
+                <p>Waiting for interviewer to start...</p>
+              </div>
+            )}
+
+            {conversation.map((msg, idx) => (
+              <div key={idx} className={`message ${msg.sender}${msg.pending ? ' pending' : ''}`}>
+                <div className="message-header">
+                  {msg.sender === 'user' ? 'You' : 'Interviewer'}
+                </div>
+                <div className="message-content">
+                  {msg.text}
+                  {msg.pending && <span className="typing-cursor" />}
+                </div>
+              </div>
+            ))}
+
+            {isUserSpeaking && (
+              <div className="message user">
+                <div className="message-header">You</div>
+                <div className="message-content speaking-indicator-bubble">
+                  <div className="speaking-waves">
+                    <span></span><span></span><span></span><span></span><span></span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-        ))}
 
-        {assessment && (
-          <div className="assessment-section">
-            <h3>Interview Assessment</h3>
-            <div
-              className="assessment-content"
-              dangerouslySetInnerHTML={{
-                __html: (() => {
-                  let formatted = assessment
-                    // Headers
-                    .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-                    .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-                    .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-                    // Bold (must be before italic)
-                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                    // Italic (only single asterisks)
-                    .replace(/(?<!\*)\*(?!\*)([^*]+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
-                    // Lists
-                    .replace(/^- (.*$)/gim, '<li>$1</li>')
-                    .replace(/^\d+\. (.*$)/gim, '<li>$1</li>')
-                    // Line breaks
-                    .replace(/\n/g, '<br>')
+          <div className="interview-controls">
+            {connected && (
+              <div className="listening-indicator live-indicator">
+                <HiSpeakerWave className="pulse-icon" />
+                <span>Live</span>
+              </div>
+            )}
 
-                  // Wrap consecutive <li> tags in <ul>
-                  const lines = formatted.split('<br>')
-                  formatted = lines.reduce((acc, line, idx, arr) => {
-                    if (line.trim().startsWith('<li>')) {
-                      if (idx === 0 || !arr[idx - 1].trim().startsWith('<li>')) {
-                        acc += '<ul>'
-                      }
-                      acc += line + '<br>'
-                      if (idx === arr.length - 1 || !arr[idx + 1].trim().startsWith('<li>')) {
-                        acc = acc.replace(/<br>$/, '') + '</ul><br>'
-                      }
-                    } else {
-                      acc += line + '<br>'
-                    }
-                    return acc
-                  }, '').replace(/<br>$/g, '')
-
-                  return formatted
-                })()
-              }}
-            />
-          </div>
-        )}
-      </div>
-
-      <div className="interview-controls">
-        {liveMode && connected && !assessment && (
-          <div className="listening-indicator live-indicator">
-            <HiSpeakerWave className="pulse-icon" />
-            <span>Live</span>
-          </div>
-        )}
-        {!liveMode && isListening && !isRecording && (
-          <div className="listening-indicator">
-            <HiSpeakerWave className="pulse-icon" />
-            <span>Listening...</span>
-          </div>
-        )}
-
-        {!assessment && (
-          <>
             {isRecording && (
               <div className="recording-indicator">
                 <div className="pulse-dot"></div>
@@ -1825,15 +1574,9 @@ function InterviewInterface({ interview, onClose }) {
               <HiStop className="icon" />
               <span>End Interview</span>
             </button>
-          </>
-        )}
-
-        {assessment && (
-          <button className="close-btn-large" onClick={onClose}>
-            Close
-          </button>
-        )}
-      </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }

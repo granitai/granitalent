@@ -1,6 +1,6 @@
-import React, { useState } from 'react'
+import React, { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useInterviews, useArchiveInterview, useDeleteInterview } from '../../hooks/useInterviews'
+import { useInterviews, useArchiveInterview, useDeleteInterview, useBulkDeleteInterviews, useBulkArchiveInterviews } from '../../hooks/useInterviews'
 import { useJobOffers } from '../../hooks/useJobOffers'
 import PageHeader from '../../components/shared/PageHeader'
 import StatusBadge from '../../components/shared/StatusBadge'
@@ -9,25 +9,79 @@ import ConfirmDialog from '../../components/shared/ConfirmDialog'
 import { formatDate } from '../../lib/utils'
 import { DATE_PRESETS, getDateRange } from '../../lib/constants'
 import { toast } from 'sonner'
-import { Mic, Eye, Archive, ArchiveRestore, Trash2, RefreshCw, Loader2 } from 'lucide-react'
+import { Mic, Eye, Archive, ArchiveRestore, Trash2, RefreshCw, Loader2, CheckSquare, Square, MinusSquare } from 'lucide-react'
 
 export default function InterviewsPage() {
   const navigate = useNavigate()
   const [filters, setFilters] = useState({ status: '', job_offer_id: '', date_from: '', date_to: '', date_preset: 'all', show_archived: false })
   const [deleteId, setDeleteId] = useState(null)
+  const [selectedIds, setSelectedIds] = useState(new Set())
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
 
   const { data: interviews = [], isLoading, refetch } = useInterviews(filters)
   const { data: jobOffers = [] } = useJobOffers()
   const archiveMutation = useArchiveInterview()
   const deleteMutation = useDeleteInterview()
+  const bulkDeleteMutation = useBulkDeleteInterviews()
+  const bulkArchiveMutation = useBulkArchiveInterviews()
+
+  const interviewIds = useMemo(() => interviews.map(i => i.interview_id), [interviews])
 
   const handleFilterChange = (key, value) => {
     if (key === 'date_from' || key === 'date_to') setFilters(p => ({ ...p, [key]: value, date_preset: 'custom' }))
     else setFilters(p => ({ ...p, [key]: value }))
   }
   const handleDatePreset = (preset) => { const range = getDateRange(preset); setFilters(p => ({ ...p, date_preset: preset, ...range })) }
-  const handleArchive = async (id, isArchived) => { try { await archiveMutation.mutateAsync({ id, isArchived }); toast.success(isArchived ? 'Restored' : 'Archived') } catch { toast.error('Failed') } }
-  const handleDelete = async () => { if (!deleteId) return; try { await deleteMutation.mutateAsync(deleteId); toast.success('Deleted'); setDeleteId(null) } catch { toast.error('Failed') } }
+  const handleArchive = async (id, isArchived) => { try { await archiveMutation.mutateAsync({ id, isArchived }); toast.success(isArchived ? 'Restored' : 'Archived'); setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next }) } catch { toast.error('Failed') } }
+  const handleDelete = async () => { if (!deleteId) return; try { await deleteMutation.mutateAsync(deleteId); toast.success('Deleted'); setDeleteId(null); setSelectedIds(prev => { const next = new Set(prev); next.delete(deleteId); return next }) } catch { toast.error('Failed') } }
+
+  // Selection
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === interviewIds.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(interviewIds))
+    }
+  }
+
+  const allSelected = interviewIds.length > 0 && selectedIds.size === interviewIds.length
+  const someSelected = selectedIds.size > 0 && selectedIds.size < interviewIds.length
+  const selectionCount = selectedIds.size
+
+  // Bulk actions
+  const handleBulkDelete = async () => {
+    const ids = [...selectedIds]
+    try {
+      const result = await bulkDeleteMutation.mutateAsync(ids)
+      toast.success(result.message)
+      setSelectedIds(new Set())
+      setBulkDeleteOpen(false)
+    } catch {
+      toast.error('Failed to delete interviews')
+    }
+  }
+
+  const handleBulkArchive = async (archive) => {
+    const ids = [...selectedIds]
+    try {
+      const result = await bulkArchiveMutation.mutateAsync({ ids, archive })
+      toast.success(result.message)
+      setSelectedIds(new Set())
+    } catch {
+      toast.error(`Failed to ${archive ? 'archive' : 'restore'} interviews`)
+    }
+  }
+
+  const SelectIcon = allSelected ? CheckSquare : someSelected ? MinusSquare : Square
 
   return (
     <div>
@@ -45,12 +99,48 @@ export default function InterviewsPage() {
         </div>
       </div>
 
+      {/* Bulk action bar */}
+      {selectionCount > 0 && (
+        <div className="mb-4 flex items-center gap-3 rounded-lg border border-brand-200 bg-brand-50 px-4 py-2.5">
+          <span className="text-sm font-medium text-brand-700">{selectionCount} selected</span>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => handleBulkArchive(!filters.show_archived)}
+              disabled={bulkArchiveMutation.isPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm ring-1 ring-slate-200 transition-colors hover:bg-slate-50"
+            >
+              {filters.show_archived ? <ArchiveRestore className="h-3.5 w-3.5" /> : <Archive className="h-3.5 w-3.5" />}
+              {filters.show_archived ? 'Restore' : 'Archive'}
+            </button>
+            <button
+              onClick={() => setBulkDeleteOpen(true)}
+              disabled={bulkDeleteMutation.isPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-red-600"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete
+            </button>
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="ml-1 rounded-md px-2 py-1.5 text-xs text-slate-500 hover:bg-white hover:text-slate-700"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       {isLoading ? <div className="flex h-40 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-brand-500" /></div>
       : interviews.length === 0 ? <EmptyState icon={Mic} title="No interviews found" description="Interviews will appear here after candidates are invited" />
       : (
         <div className="card overflow-hidden">
           <table className="w-full">
             <thead><tr className="border-b border-slate-200 bg-slate-50/50">
+              <th className="w-10 px-3 py-3">
+                <button onClick={toggleSelectAll} className="flex items-center justify-center text-slate-400 hover:text-brand-500 transition-colors">
+                  <SelectIcon className="h-4.5 w-4.5" />
+                </button>
+              </th>
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Candidate</th>
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Job</th>
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Status</th>
@@ -59,26 +149,35 @@ export default function InterviewsPage() {
               <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">Actions</th>
             </tr></thead>
             <tbody className="divide-y divide-slate-100">
-              {interviews.map(i => (
-                <tr key={i.interview_id} className="transition-colors hover:bg-slate-50/50">
-                  <td className="px-4 py-3"><p className="text-sm font-medium text-slate-900">{i.candidate.name}</p><p className="text-xs text-slate-500">{i.candidate.email || ''}</p></td>
-                  <td className="px-4 py-3 text-sm text-slate-700">{i.job_offer.title}</td>
-                  <td className="px-4 py-3"><div className="flex gap-1.5"><StatusBadge status={i.status} />{i.recommendation && <StatusBadge status={i.recommendation} />}</div></td>
-                  <td className="px-4 py-3 text-sm text-slate-500">{formatDate(i.created_at)}</td>
-                  <td className="px-4 py-3 text-sm text-slate-500">{formatDate(i.completed_at)}</td>
-                  <td className="px-4 py-3"><div className="flex items-center justify-end gap-1">
-                    <button onClick={() => navigate(`/admin/interviews/${i.interview_id}`)} className="btn-icon" title="View"><Eye className="h-4 w-4" /></button>
-                    <button onClick={() => handleArchive(i.interview_id, i.is_archived)} className="btn-icon" title={i.is_archived ? 'Restore' : 'Archive'}>{i.is_archived ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}</button>
-                    <button onClick={() => setDeleteId(i.interview_id)} className="btn-icon text-red-500 hover:bg-red-50 hover:text-red-700" title="Delete"><Trash2 className="h-4 w-4" /></button>
-                  </div></td>
-                </tr>
-              ))}
+              {interviews.map(i => {
+                const isSelected = selectedIds.has(i.interview_id)
+                return (
+                  <tr key={i.interview_id} className={`transition-colors ${isSelected ? 'bg-brand-50/50' : 'hover:bg-slate-50/50'}`}>
+                    <td className="w-10 px-3 py-3">
+                      <button onClick={() => toggleSelect(i.interview_id)} className={`flex items-center justify-center transition-colors ${isSelected ? 'text-brand-500' : 'text-slate-300 hover:text-slate-500'}`}>
+                        {isSelected ? <CheckSquare className="h-4.5 w-4.5" /> : <Square className="h-4.5 w-4.5" />}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3"><p className="text-sm font-medium text-slate-900">{i.candidate.name}</p><p className="text-xs text-slate-500">{i.candidate.email || ''}</p></td>
+                    <td className="px-4 py-3 text-sm text-slate-700">{i.job_offer.title}</td>
+                    <td className="px-4 py-3"><div className="flex gap-1.5"><StatusBadge status={i.status} />{i.recommendation && <StatusBadge status={i.recommendation} />}</div></td>
+                    <td className="px-4 py-3 text-sm text-slate-500">{formatDate(i.created_at)}</td>
+                    <td className="px-4 py-3 text-sm text-slate-500">{formatDate(i.completed_at)}</td>
+                    <td className="px-4 py-3"><div className="flex items-center justify-end gap-1">
+                      <button onClick={() => navigate(`/admin/interviews/${i.interview_id}`)} className="btn-icon" title="View"><Eye className="h-4 w-4" /></button>
+                      <button onClick={() => handleArchive(i.interview_id, i.is_archived)} className="btn-icon" title={i.is_archived ? 'Restore' : 'Archive'}>{i.is_archived ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}</button>
+                      <button onClick={() => setDeleteId(i.interview_id)} className="btn-icon text-red-500 hover:bg-red-50 hover:text-red-700" title="Delete"><Trash2 className="h-4 w-4" /></button>
+                    </div></td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
       )}
 
       <ConfirmDialog open={!!deleteId} onClose={() => setDeleteId(null)} onConfirm={handleDelete} title="Delete Interview" description="This will permanently delete this interview." confirmLabel="Delete" loading={deleteMutation.isPending} />
+      <ConfirmDialog open={bulkDeleteOpen} onClose={() => setBulkDeleteOpen(false)} onConfirm={handleBulkDelete} title={`Delete ${selectionCount} Interview${selectionCount !== 1 ? 's' : ''}`} description={`This will permanently delete ${selectionCount} interview${selectionCount !== 1 ? 's' : ''}. This action cannot be undone.`} confirmLabel={`Delete ${selectionCount}`} loading={bulkDeleteMutation.isPending} />
     </div>
   )
 }

@@ -2,7 +2,7 @@
 import logging
 from typing import Optional
 from cartesia import Cartesia
-from backend.config import CARTESIA_API_KEY
+from backend.config import CARTESIA_API_KEY, DEFAULT_CARTESIA_VOICE_ID as CONFIG_CARTESIA_VOICE_ID
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -18,9 +18,8 @@ CARTESIA_TTS_MODELS = {
     "sonic": "Sonic — Standard",
 }
 
-# Default voice ID - using a known working Cartesia voice
-# You can find more voices at https://play.cartesia.ai/
-DEFAULT_CARTESIA_VOICE_ID = "79a125e8-cd45-4c13-8a67-188112f4dd22"  # British Lady
+# Default voice ID from env var (via config)
+DEFAULT_CARTESIA_VOICE_ID = CONFIG_CARTESIA_VOICE_ID
 
 
 def text_to_speech(

@@ -11,7 +11,7 @@ import json
 from openai import OpenAI
 from typing import List, Dict, Optional
 
-from backend.config import OPENAI_API_KEY, LLM_PROVIDERS
+from backend.config import OPENAI_API_KEY, LLM_PROVIDERS, LLM_TEMPERATURE, LANGUAGE_LLM_TEMPERATURE, ASSESSMENT_TEMPERATURE, ASSESSMENT_MAX_TOKENS
 from backend.services.language_prompts import (
     build_language_evaluator_prompt,
     build_language_assessment_prompt,
@@ -116,7 +116,7 @@ def generate_response(
     response = client.chat.completions.create(
         model=model_id,
         messages=messages,
-        temperature=0.8,
+        temperature=LANGUAGE_LLM_TEMPERATURE,
         max_tokens=500
     )
     
@@ -140,7 +140,7 @@ def generate_audio_check_message(model_id: Optional[str] = None, language: Optio
     response = client.chat.completions.create(
         model=model_id,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
+        temperature=LLM_TEMPERATURE,
         max_tokens=100
     )
     
@@ -161,7 +161,7 @@ def generate_name_request_message(model_id: Optional[str] = None, language: Opti
     response = client.chat.completions.create(
         model=model_id,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
+        temperature=LLM_TEMPERATURE,
         max_tokens=150
     )
     
@@ -207,7 +207,7 @@ def generate_opening_greeting(
     response = client.chat.completions.create(
         model=model_id,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
+        temperature=LLM_TEMPERATURE,
         max_tokens=300
     )
     
@@ -270,8 +270,8 @@ def generate_assessment(
     response = client.chat.completions.create(
         model=model_id,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
-        max_tokens=2000
+        temperature=ASSESSMENT_TEMPERATURE,
+        max_tokens=ASSESSMENT_MAX_TOKENS
     )
     
     return response.choices[0].message.content.strip()
@@ -315,12 +315,16 @@ def generate_transcript_annotations(
             model=model_id,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=2000,
+            max_tokens=4096,
             response_format={"type": "json_object"}
         )
         
         content = response.choices[0].message.content.strip()
-        annotations = json.loads(content)
+        from backend.services.language_llm_gemini import _parse_annotation_json
+        annotations = _parse_annotation_json(content)
+        if annotations is None:
+            logger.warning(f"Could not parse annotation JSON, returning empty. Content: {content[:200]}")
+            return {}
         return annotations
     except Exception as e:
         logger.error(f"❌ Error generating transcript annotations: {e}")

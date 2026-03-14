@@ -3,7 +3,7 @@ import re
 import logging
 import google.generativeai as genai
 from typing import List, Dict, Optional
-from backend.config import GOOGLE_API_KEY, LLM_PROVIDERS, DEFAULT_LLM_PROVIDER, INTERVIEWER_SYSTEM_PROMPT, build_interviewer_system_prompt
+from backend.config import GOOGLE_API_KEY, LLM_PROVIDERS, DEFAULT_LLM_PROVIDER, INTERVIEWER_SYSTEM_PROMPT, build_interviewer_system_prompt, LLM_TEMPERATURE, LLM_MAX_OUTPUT_TOKENS
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -162,7 +162,7 @@ Respond only with what you would say, without any prefix."""
     full_prompt = "\n\n".join(prompt_parts)
     response = model.generate_content(
         full_prompt,
-        generation_config=genai.types.GenerationConfig(temperature=0.7, max_output_tokens=300)
+        generation_config=genai.types.GenerationConfig(temperature=LLM_TEMPERATURE, max_output_tokens=LLM_MAX_OUTPUT_TOKENS)
     )
 
     # Clean the response
@@ -524,6 +524,8 @@ For EACH language used in the transcript, provide:
 - Fluency: ability to sustain speech, express complex ideas
 - At least 3 specific quotes from the transcript with analysis
 Note: Occasional fillers ("euh", "umm") are normal in spoken language — do not penalize.
+
+EVIDENCE RULE: For EVERY score you assign, you MUST cite at least one specific quote from the transcript that justifies the score. If the candidate did not address a topic at all, score it 0 and state "Not addressed in interview." Do not infer or assume competence — only evaluate what was explicitly said.
 
 **Areas of Strength** — What the candidate demonstrated well (cite transcript)
 **Areas for Improvement** — What was missing or weak

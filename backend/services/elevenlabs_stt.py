@@ -5,7 +5,7 @@ import socket
 from io import BytesIO
 from typing import Optional
 from elevenlabs import ElevenLabs
-from backend.config import ELEVENLABS_API_KEY, STT_MODEL
+from backend.config import ELEVENLABS_API_KEY, STT_MODEL, STT_MAX_RETRIES, STT_RETRY_DELAY
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -29,9 +29,9 @@ def get_client():
         _cached_api_key = api_key
     return _cached_client
 
-# Retry configuration
-MAX_RETRIES = 3
-RETRY_DELAY = 1.0  # seconds
+# Retry configuration (from env vars via config)
+MAX_RETRIES = STT_MAX_RETRIES
+RETRY_DELAY = STT_RETRY_DELAY
 
 
 def speech_to_text(audio_bytes: bytes, audio_format: str = "webm", model_id: Optional[str] = None, language_code: Optional[str] = None) -> str:

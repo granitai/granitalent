@@ -34,14 +34,17 @@ class GeminiLiveSession:
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-2.5-flash-native-audio-preview-12-2025",
+        model: str = None,
         system_prompt: str = "",
         voice: str = DEFAULT_VOICE,
+        language: str = "en",
     ):
+        import os
         self.api_key = api_key
-        self.model = model
+        self.model = model or os.getenv("LIVE_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
         self.system_prompt = system_prompt
         self.voice = voice
+        self.language = language
         self.ws = None
         self.connected = False
         self.ai_text_parts: List[str] = []
@@ -54,6 +57,7 @@ class GeminiLiveSession:
         self._on_interrupted: Optional[Callable] = None
         self._on_input_transcription: Optional[Callable] = None
         self._on_output_transcription: Optional[Callable] = None
+        self._on_interview_end: Optional[Callable] = None
 
     # ------------------------------------------------------------------
     # Callback registration
@@ -75,6 +79,9 @@ class GeminiLiveSession:
 
     def on_output_transcription(self, cb: Callable):
         self._on_output_transcription = cb
+
+    def on_interview_end(self, cb: Callable):
+        self._on_interview_end = cb
 
     # ------------------------------------------------------------------
     # Connection
@@ -102,6 +109,43 @@ class GeminiLiveSession:
                 },
                 "systemInstruction": {
                     "parts": [{"text": self.system_prompt}]
+                },
+                "tools": [
+                    {
+                        "functionDeclarations": [
+                            {
+                                "name": "end_interview",
+                                "description": (
+                                    "Call this function when the interview is finished. "
+                                    "You MUST call this after you have said your final goodbye/farewell to the candidate. "
+                                    "CRITICAL: You must have received the candidate's answer to your LAST question before calling this. "
+                                    "Never call this right after asking a question — always wait for the answer first, then say goodbye, then call this. "
+                                    "Triggers: time is up, or the candidate asks to end. "
+                                    "IMPORTANT: Do NOT call this on your own to end the interview early. "
+                                    "The system will tell you when it is time to end. Just keep asking questions until told otherwise."
+                                ),
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "reason": {
+                                            "type": "string",
+                                            "description": "Why the interview ended, e.g. 'all_questions_asked', 'time_up', 'candidate_requested'"
+                                        }
+                                    },
+                                    "required": ["reason"]
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "realtimeInputConfig": {
+                    "automaticActivityDetection": {
+                        "disabled": False,
+                        "startOfSpeechSensitivity": "START_SENSITIVITY_HIGH",
+                        "endOfSpeechSensitivity": "END_SENSITIVITY_HIGH",
+                        "prefixPaddingMs": 200,
+                        "silenceDurationMs": 800,
+                    }
                 },
                 "inputAudioTranscription": {},
                 "outputAudioTranscription": {},
@@ -139,7 +183,8 @@ class GeminiLiveSession:
             logger.error(f"send_audio error: {e}")
 
     async def send_text(self, text: str):
-        """Send a text message to the live session (e.g. for assessment)."""
+        """Send a text message to the live session (e.g. for assessment).
+        Uses turnComplete=True which forces Gemini to respond immediately."""
         if not self.ws or not self.connected:
             return
         try:
@@ -151,6 +196,27 @@ class GeminiLiveSession:
             }))
         except Exception as e:
             logger.error(f"send_text error: {e}")
+
+    async def send_context(self, text: str):
+        """Buffer a text instruction into the conversation context WITHOUT triggering a response.
+
+        Uses turnComplete=False so the content is buffered until the next natural
+        turn completion (e.g., VAD detecting end-of-speech on realtimeInput audio).
+        This allows injecting instructions (like language switch) that Gemini will
+        process together with the candidate's next audio response, producing ONE
+        natural combined response instead of forcing an immediate interruption.
+        """
+        if not self.ws or not self.connected:
+            return
+        try:
+            await self.ws.send(json.dumps({
+                "clientContent": {
+                    "turns": [{"role": "user", "parts": [{"text": text}]}],
+                    "turnComplete": False,
+                }
+            }))
+        except Exception as e:
+            logger.error(f"send_context error: {e}")
 
     # ------------------------------------------------------------------
     # Receiving (background loop)
@@ -165,8 +231,8 @@ class GeminiLiveSession:
                     pass
                 except Exception as e:
                     logger.error(f"Gemini Live dispatch error: {e}")
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("Gemini Live connection closed")
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.warning(f"Gemini Live connection closed: code={e.code}, reason='{e.reason}'")
         except Exception as e:
             if self.connected:
                 logger.error(f"Gemini Live receive error: {e}")
@@ -174,6 +240,39 @@ class GeminiLiveSession:
             self.connected = False
 
     async def _dispatch(self, msg: dict):
+        # Handle function calls (tool use) — comes at top level, not inside serverContent
+        tool_call = msg.get("toolCall")
+        if tool_call:
+            for fc in tool_call.get("functionCalls", []):
+                fn_name = fc.get("name")
+                fn_args = fc.get("args", {})
+                fn_id = fc.get("id", "")
+                logger.info(f"Gemini Live tool call: {fn_name}({fn_args})")
+
+                if fn_name == "end_interview":
+                    reason = fn_args.get("reason", "ai_decided")
+                    # Fire callback — returns True (accept), False (reject), or dict with rejection details
+                    should_end = True
+                    rejection_reason = "The interview is not finished yet. Continue asking questions and wait for the system to tell you when it is time to end."
+                    if self._on_interview_end:
+                        result = await self._on_interview_end(reason)
+                        if result is False:
+                            should_end = False
+                        elif isinstance(result, dict):
+                            should_end = False
+                            rejection_reason = result.get("reason", rejection_reason)
+                    if should_end:
+                        await self._send_function_response(fn_id, fn_name, {"status": "ok"})
+                    else:
+                        await self._send_function_response(fn_id, fn_name, {
+                            "status": "rejected",
+                            "reason": rejection_reason,
+                        })
+                else:
+                    # Unknown function — respond with error
+                    await self._send_function_response(fn_id, fn_name, {"error": "unknown_function"})
+            return
+
         sc = msg.get("serverContent")
         if not sc:
             return
@@ -214,6 +313,26 @@ class GeminiLiveSession:
             logger.info("Gemini Live: model interrupted by user")
             if self._on_interrupted:
                 await self._on_interrupted()
+
+    # ------------------------------------------------------------------
+    # Function response
+    # ------------------------------------------------------------------
+    async def _send_function_response(self, call_id: str, fn_name: str, result: dict):
+        """Send a FunctionResponse back to Gemini after a tool call."""
+        if not self.ws or not self.connected:
+            return
+        try:
+            await self.ws.send(json.dumps({
+                "toolResponse": {
+                    "functionResponses": [{
+                        "id": call_id,
+                        "name": fn_name,
+                        "response": result,
+                    }]
+                }
+            }))
+        except Exception as e:
+            logger.error(f"Error sending function response: {e}")
 
     # ------------------------------------------------------------------
     # Transcript & cleanup

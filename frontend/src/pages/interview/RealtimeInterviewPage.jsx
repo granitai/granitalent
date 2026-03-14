@@ -33,7 +33,7 @@ export default function RealtimeInterviewPage() {
       const response = await axios.get(`${API_BASE_URL}/candidates/interviews/${interviewId}`, {
         params: { email: email.trim() }
       })
-      if (response.data.status === 'completed') {
+      if (response.data.status === 'completed' || response.data.status === 'in_progress') {
         setAlreadyCompleted(true)
         setLoading(false)
         return

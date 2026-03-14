@@ -41,3 +41,18 @@ export function useDeleteCandidate() {
     },
   })
 }
+
+export function useBulkDeleteCandidates() {
+  const { authApi } = useAuth()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (ids) => {
+      const { data } = await authApi.post('/admin/candidates/bulk-delete', { candidate_ids: ids })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['candidates'] })
+    },
+  })
+}

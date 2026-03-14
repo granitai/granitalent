@@ -84,6 +84,22 @@ export function useDeleteJobOffer() {
   })
 }
 
+export function useBulkDeleteJobOffers() {
+  const { authApi } = useAuth()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (ids) => {
+      const { data } = await authApi.post('/admin/job-offers/bulk-delete', { offer_ids: ids })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['job-offers'] })
+      queryClient.invalidateQueries({ queryKey: ['public-job-offers'] })
+    },
+  })
+}
+
 export function useJobOfferApplications(offerId) {
   const { authApi } = useAuth()
 

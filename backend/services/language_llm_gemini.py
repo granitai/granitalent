@@ -11,7 +11,7 @@ import json
 import google.generativeai as genai
 from typing import List, Dict, Optional
 
-from backend.config import GOOGLE_API_KEY, LLM_PROVIDERS, DEFAULT_LLM_PROVIDER
+from backend.config import GOOGLE_API_KEY, LLM_PROVIDERS, DEFAULT_LLM_PROVIDER, LANGUAGE_LLM_TEMPERATURE, ASSESSMENT_TEMPERATURE, ASSESSMENT_MAX_TOKENS
 from backend.services.language_prompts import (
     build_language_evaluator_prompt,
     build_language_assessment_prompt,
@@ -118,7 +118,7 @@ def generate_response(
     full_prompt = "\n\n".join(prompt_parts)
     response = model.generate_content(
         full_prompt,
-        generation_config=genai.types.GenerationConfig(temperature=0.8)
+        generation_config=genai.types.GenerationConfig(temperature=LANGUAGE_LLM_TEMPERATURE)
     )
     
     cleaned = clean_response(response.text)
@@ -250,35 +250,117 @@ def generate_assessment(
     return response.text.strip()
 
 
+def _parse_annotation_json(content: str) -> Optional[dict]:
+    """Parse annotation JSON robustly, handling truncated or malformed responses.
+
+    French feedback often contains apostrophes and special characters that can
+    cause issues if the model doesn't escape them properly. Also handles
+    truncated responses by salvaging complete key-value pairs.
+    """
+    import re
+
+    # Remove markdown code fences if present
+    if content.startswith("```"):
+        content = content.split("\n", 1)[-1]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+
+    # Clean trailing commas
+    fixed = re.sub(r',\s*}', '}', content)
+    fixed = re.sub(r',\s*\]', ']', fixed)
+    try:
+        return json.loads(fixed)
+    except json.JSONDecodeError:
+        pass
+
+    # Try to salvage truncated JSON: find all complete "key": "value" pairs
+    # This handles cases where the response was cut off mid-value
+    start = fixed.find('{')
+    if start == -1:
+        return None
+
+    # Extract all complete key-value pairs using regex
+    # Matches "digit_key": "any value with escaped quotes"
+    pairs = re.findall(r'"(\d+)"\s*:\s*"((?:[^"\\]|\\.)*)"\s*[,}]', fixed[start:])
+    if pairs:
+        result = {}
+        for key, value in pairs:
+            # Unescape the value
+            try:
+                result[key] = json.loads(f'"{value}"')
+            except json.JSONDecodeError:
+                result[key] = value.replace('\\"', '"').replace('\\n', '\n')
+        if result:
+            logger.info(f"Salvaged {len(result)} annotation entries from truncated JSON")
+            return result
+
+    # Last resort: try to find balanced JSON object
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(fixed)):
+        c = fixed[i]
+        if escape:
+            escape = False
+            continue
+        if c == '\\' and in_string:
+            escape = True
+            continue
+        if c == '"' and not escape:
+            in_string = not in_string
+            continue
+        if not in_string:
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(fixed[start:i+1])
+                    except json.JSONDecodeError:
+                        break
+
+    return None
+
+
 def generate_transcript_annotations(
     conversation_history: List[Dict[str, str]],
-    model_id: Optional[str] = None
+    model_id: Optional[str] = None,
+    feedback_language: Optional[str] = None
 ) -> Dict[str, str]:
     """
     Generate language feedback for each of the candidate's messages in the transcript.
-    
+
     Args:
         conversation_history: The full conversation history
         model_id: The Gemini model to use
-    
+        feedback_language: Language in which to write feedback (e.g. "French")
+
     Returns:
         A dictionary mapping the message index (as string) to the AI's feedback.
     """
     if model_id is None:
         model_id = DEFAULT_LLM_MODEL
-    
-    logger.info(f"🌐 Language LLM (Gemini): Generating transcript language annotations")
-    
+
+    logger.info(f"🌐 Language LLM (Gemini): Generating transcript language annotations (feedback in {feedback_language or 'English'})")
+
     # Build transcript with indices
     transcript = []
     for i, msg in enumerate(conversation_history):
         role = "Evaluator" if msg["role"] == "assistant" else "Candidate"
         transcript.append(f"[{i}] {role}: {msg['content']}")
-        
+
     transcript_text = "\n".join(transcript)
-    
+
     from backend.services.language_prompts import build_transcript_annotation_prompt
-    prompt = build_transcript_annotation_prompt(conversation_transcript=transcript_text)
+    prompt = build_transcript_annotation_prompt(conversation_transcript=transcript_text, feedback_language=feedback_language)
     
     model = genai.GenerativeModel(model_id)
     
@@ -286,15 +368,18 @@ def generate_transcript_annotations(
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=0.3,
-                max_output_tokens=2000,
+                temperature=ASSESSMENT_TEMPERATURE,
+                max_output_tokens=ASSESSMENT_MAX_TOKENS,
                 response_mime_type="application/json"
             )
         )
-        
+
         content = response.text.strip()
-        annotations = json.loads(content)
+        annotations = _parse_annotation_json(content)
+        if annotations is None:
+            logger.warning(f"Could not parse annotation JSON, returning empty. Content: {content[:200]}")
+            return {}
         return annotations
     except Exception as e:
-        logger.error(f"❌ Error generating transcript annotations: {e}")
+        logger.error(f"Error generating transcript annotations: {e}")
         return {}

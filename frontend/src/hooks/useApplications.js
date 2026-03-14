@@ -108,6 +108,36 @@ export function useOverrideApplication() {
   })
 }
 
+export function useBulkDeleteApplications() {
+  const { authApi } = useAuth()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (ids) => {
+      const { data } = await authApi.post('/admin/applications/bulk-delete', { application_ids: ids })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['applications'] })
+    },
+  })
+}
+
+export function useBulkArchiveApplications() {
+  const { authApi } = useAuth()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ ids, archive }) => {
+      const { data } = await authApi.post('/admin/applications/bulk-archive', { application_ids: ids, archive })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['applications'] })
+    },
+  })
+}
+
 export function useSendInterview() {
   const { authApi } = useAuth()
   const queryClient = useQueryClient()

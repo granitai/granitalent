@@ -61,6 +61,52 @@ export function useDeleteInterview() {
   })
 }
 
+export function useBulkDeleteInterviews() {
+  const { authApi } = useAuth()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (ids) => {
+      const { data } = await authApi.post('/admin/interviews/bulk-delete', { interview_ids: ids })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['interviews'] })
+    },
+  })
+}
+
+export function useBulkArchiveInterviews() {
+  const { authApi } = useAuth()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ ids, archive }) => {
+      const { data } = await authApi.post('/admin/interviews/bulk-archive', { interview_ids: ids, archive })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['interviews'] })
+    },
+  })
+}
+
+export function useRegenerateAssessment() {
+  const { authApi } = useAuth()
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (id) => {
+      const { data } = await authApi.post(`/admin/interviews/${id}/regenerate-assessment`)
+      return data
+    },
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ['interview', id] })
+      queryClient.invalidateQueries({ queryKey: ['interviews'] })
+    },
+  })
+}
+
 export function useInterviewRecording(interviewId) {
   const { authApi } = useAuth()
 

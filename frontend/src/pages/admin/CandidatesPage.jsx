@@ -1,5 +1,5 @@
-import React, { useState } from 'react'
-import { useCandidates, useCandidate, useDeleteCandidate } from '../../hooks/useCandidates'
+import React, { useState, useMemo } from 'react'
+import { useCandidates, useCandidate, useDeleteCandidate, useBulkDeleteCandidates } from '../../hooks/useCandidates'
 import PageHeader from '../../components/shared/PageHeader'
 import EmptyState from '../../components/shared/EmptyState'
 import ConfirmDialog from '../../components/shared/ConfirmDialog'
@@ -7,16 +7,21 @@ import Modal from '../../components/shared/Modal'
 import StatusBadge from '../../components/shared/StatusBadge'
 import { formatDate, formatDateTime } from '../../lib/utils'
 import { toast } from 'sonner'
-import { Search, Users, Eye, Trash2, Loader2, Mail, Phone, Globe, X } from 'lucide-react'
+import { Search, Users, Eye, Trash2, Loader2, Mail, Phone, Globe, CheckSquare, Square, MinusSquare } from 'lucide-react'
 
 export default function CandidatesPage() {
   const [search, setSearch] = useState('')
   const [deleteId, setDeleteId] = useState(null)
   const [selectedEmail, setSelectedEmail] = useState(null)
+  const [selectedIds, setSelectedIds] = useState(new Set())
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
 
   const { data: candidates = [], isLoading } = useCandidates(search)
   const { data: candidateDetail } = useCandidate(selectedEmail)
   const deleteMutation = useDeleteCandidate()
+  const bulkDeleteMutation = useBulkDeleteCandidates()
+
+  const candidateIds = useMemo(() => candidates.map(c => c.candidate_id), [candidates])
 
   const handleDelete = async () => {
     if (!deleteId) return
@@ -24,10 +29,47 @@ export default function CandidatesPage() {
       await deleteMutation.mutateAsync(deleteId)
       toast.success('Candidate deleted')
       setDeleteId(null)
+      setSelectedIds(prev => { const next = new Set(prev); next.delete(deleteId); return next })
     } catch {
       toast.error('Failed to delete candidate')
     }
   }
+
+  // Selection
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === candidateIds.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(candidateIds))
+    }
+  }
+
+  const allSelected = candidateIds.length > 0 && selectedIds.size === candidateIds.length
+  const someSelected = selectedIds.size > 0 && selectedIds.size < candidateIds.length
+  const selectionCount = selectedIds.size
+
+  const handleBulkDelete = async () => {
+    const ids = [...selectedIds]
+    try {
+      const result = await bulkDeleteMutation.mutateAsync(ids)
+      toast.success(result.message)
+      setSelectedIds(new Set())
+      setBulkDeleteOpen(false)
+    } catch {
+      toast.error('Failed to delete candidates')
+    }
+  }
+
+  const SelectIcon = allSelected ? CheckSquare : someSelected ? MinusSquare : Square
 
   return (
     <div>
@@ -44,6 +86,29 @@ export default function CandidatesPage() {
         </div>
       </div>
 
+      {/* Bulk action bar */}
+      {selectionCount > 0 && (
+        <div className="mb-4 flex items-center gap-3 rounded-lg border border-brand-200 bg-brand-50 px-4 py-2.5">
+          <span className="text-sm font-medium text-brand-700">{selectionCount} selected</span>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setBulkDeleteOpen(true)}
+              disabled={bulkDeleteMutation.isPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-red-600"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete
+            </button>
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="ml-1 rounded-md px-2 py-1.5 text-xs text-slate-500 hover:bg-white hover:text-slate-700"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       {isLoading ? (
         <div className="flex h-40 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-brand-500" /></div>
       ) : candidates.length === 0 ? (
@@ -53,6 +118,11 @@ export default function CandidatesPage() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50/50">
+                <th className="w-10 px-3 py-3">
+                  <button onClick={toggleSelectAll} className="flex items-center justify-center text-slate-400 hover:text-brand-500 transition-colors">
+                    <SelectIcon className="h-4.5 w-4.5" />
+                  </button>
+                </th>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Name</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Email</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Phone</th>
@@ -62,21 +132,29 @@ export default function CandidatesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {candidates.map((c) => (
-                <tr key={c.candidate_id} className="transition-colors hover:bg-slate-50/50">
-                  <td className="px-4 py-3"><p className="text-sm font-medium text-slate-900">{c.full_name}</p></td>
-                  <td className="px-4 py-3"><p className="text-sm text-slate-600">{c.email}</p></td>
-                  <td className="px-4 py-3"><p className="text-sm text-slate-500">{c.phone || '-'}</p></td>
-                  <td className="px-4 py-3"><span className="badge bg-brand-50 text-brand-700">{c.total_applications}</span></td>
-                  <td className="px-4 py-3"><p className="text-sm text-slate-500">{formatDate(c.latest_application)}</p></td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      <button onClick={() => setSelectedEmail(c.email)} className="btn-icon" title="View"><Eye className="h-4 w-4" /></button>
-                      <button onClick={() => setDeleteId(c.candidate_id)} className="btn-icon text-red-500 hover:bg-red-50 hover:text-red-700" title="Delete"><Trash2 className="h-4 w-4" /></button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {candidates.map((c) => {
+                const isSelected = selectedIds.has(c.candidate_id)
+                return (
+                  <tr key={c.candidate_id} className={`transition-colors ${isSelected ? 'bg-brand-50/50' : 'hover:bg-slate-50/50'}`}>
+                    <td className="w-10 px-3 py-3">
+                      <button onClick={() => toggleSelect(c.candidate_id)} className={`flex items-center justify-center transition-colors ${isSelected ? 'text-brand-500' : 'text-slate-300 hover:text-slate-500'}`}>
+                        {isSelected ? <CheckSquare className="h-4.5 w-4.5" /> : <Square className="h-4.5 w-4.5" />}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3"><p className="text-sm font-medium text-slate-900">{c.full_name}</p></td>
+                    <td className="px-4 py-3"><p className="text-sm text-slate-600">{c.email}</p></td>
+                    <td className="px-4 py-3"><p className="text-sm text-slate-500">{c.phone || '-'}</p></td>
+                    <td className="px-4 py-3"><span className="badge bg-brand-50 text-brand-700">{c.total_applications}</span></td>
+                    <td className="px-4 py-3"><p className="text-sm text-slate-500">{formatDate(c.latest_application)}</p></td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => setSelectedEmail(c.email)} className="btn-icon" title="View"><Eye className="h-4 w-4" /></button>
+                        <button onClick={() => setDeleteId(c.candidate_id)} className="btn-icon text-red-500 hover:bg-red-50 hover:text-red-700" title="Delete"><Trash2 className="h-4 w-4" /></button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -110,6 +188,15 @@ export default function CandidatesPage() {
       </Modal>
 
       <ConfirmDialog open={!!deleteId} onClose={() => setDeleteId(null)} onConfirm={handleDelete} title="Delete Candidate" description="This will permanently delete this candidate and ALL their applications and interviews." confirmLabel="Delete" loading={deleteMutation.isPending} />
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onClose={() => setBulkDeleteOpen(false)}
+        onConfirm={handleBulkDelete}
+        title={`Delete ${selectionCount} Candidate${selectionCount !== 1 ? 's' : ''}`}
+        description={`This will permanently delete ${selectionCount} candidate${selectionCount !== 1 ? 's' : ''} and ALL their applications and interviews. This action cannot be undone.`}
+        confirmLabel={`Delete ${selectionCount}`}
+        loading={bulkDeleteMutation.isPending}
+      />
     </div>
   )
 }

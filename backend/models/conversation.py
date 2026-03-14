@@ -167,19 +167,22 @@ class ConversationManager:
         except:
             return []
     
-    def add_message(self, role: str, text: str):
+    def add_message(self, role: str, text: str, **extra):
         """
         Add a message to the conversation history.
-        
+
         Args:
             role: Either 'user' or 'interviewer'
             text: The message content
+            **extra: Optional metadata (e.g. audio_key for per-turn audio)
         """
-        self.history.append({
+        msg = {
             "role": role,
             "text": text,
             "timestamp": datetime.now().isoformat()
-        })
+        }
+        msg.update(extra)
+        self.history.append(msg)
     
     def get_history(self) -> List[Dict[str, str]]:
         """Get the full conversation history."""
@@ -194,10 +197,16 @@ class ConversationManager:
         for msg in self.history:
             # Map 'interviewer' to 'assistant' for LLM
             role = "assistant" if msg["role"] == "interviewer" else "user"
-            formatted_history.append({
+            entry = {
                 "role": role,
                 "content": msg["text"]
-            })
+            }
+            # Preserve per-turn audio metadata if present
+            if "audio_key" in msg:
+                entry["audio_key"] = msg["audio_key"]
+            if "audio_turn" in msg:
+                entry["audio_turn"] = msg["audio_turn"]
+            formatted_history.append(entry)
         return formatted_history
     
     def reset(self):

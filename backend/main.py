@@ -52,7 +52,7 @@ import uvicorn
 import uuid
 
 from backend.config import (
-    DEFAULT_VOICE_ID, DEFAULT_CARTESIA_VOICE_ID,
+    DEFAULT_VOICE_ID,
     TTS_PROVIDERS, STT_PROVIDERS, LLM_PROVIDERS,
     DEFAULT_TTS_PROVIDER, DEFAULT_STT_PROVIDER, DEFAULT_LLM_PROVIDER,
     INTERVIEW_TIME_LIMIT_MINUTES
@@ -89,21 +89,12 @@ from datetime import timedelta
 from backend.services.elevenlabs_tts import text_to_speech as elevenlabs_tts
 from backend.services.elevenlabs_stt import speech_to_text as elevenlabs_stt
 from backend.services.elevenlabs_stt_streaming import ElevenLabsSTTStreaming
-from backend.services.cartesia_tts import text_to_speech as cartesia_tts
-from backend.services.cartesia_stt import speech_to_text as cartesia_stt
 from backend.services.language_llm_gemini import (
     generate_response as gemini_generate_response,
     generate_opening_greeting as gemini_generate_opening_greeting,
     generate_assessment as gemini_generate_assessment,
     generate_audio_check_message as gemini_generate_audio_check,
     generate_name_request_message as gemini_generate_name_request
-)
-from backend.services.language_llm_gpt import (
-    generate_response as gpt_generate_response,
-    generate_opening_greeting as gpt_generate_opening_greeting,
-    generate_assessment as gpt_generate_assessment,
-    generate_audio_check_message as gpt_generate_audio_check,
-    generate_name_request_message as gpt_generate_name_request
 )
 
 app = FastAPI(title="AI Interviewer API")
@@ -323,24 +314,14 @@ def extract_recommendation(assessment_text: str) -> Optional[str]:
     return None
 
 
-def get_tts_function(provider: str):
-    """Get the TTS function for the specified provider."""
-    if provider == "elevenlabs":
-        return elevenlabs_tts
-    elif provider == "cartesia":
-        return cartesia_tts
-    else:
-        raise ValueError(f"Unknown TTS provider: {provider}")
+def get_tts_function(provider: str = "elevenlabs"):
+    """Get the TTS function."""
+    return elevenlabs_tts
 
 
-def get_stt_function(provider: str):
-    """Get the STT function for the specified provider."""
-    if provider == "elevenlabs" or provider == "elevenlabs_streaming":
-        return elevenlabs_stt
-    elif provider == "cartesia":
-        return cartesia_stt
-    else:
-        raise ValueError(f"Unknown STT provider: {provider}")
+def get_stt_function(provider: str = "elevenlabs"):
+    """Get the STT function."""
+    return elevenlabs_stt
 
 
 def is_streaming_stt_provider(provider: str) -> bool:
@@ -348,36 +329,37 @@ def is_streaming_stt_provider(provider: str) -> bool:
     return provider == "elevenlabs_streaming"
 
 
-def get_voice_id(provider: str):
-    """Get the default voice ID for the specified TTS provider."""
-    if provider == "elevenlabs":
-        return DEFAULT_VOICE_ID
-    elif provider == "cartesia":
-        return DEFAULT_CARTESIA_VOICE_ID
-    else:
-        return DEFAULT_VOICE_ID
+def get_voice_id(provider: str = "elevenlabs"):
+    """Get the default voice ID."""
+    return DEFAULT_VOICE_ID
 
 
-def get_llm_functions(provider: str):
-    """Get the LLM functions for the specified provider."""
-    if provider == "gemini":
-        return {
-            "generate_response": gemini_generate_response,
-            "generate_opening_greeting": gemini_generate_opening_greeting,
-            "generate_assessment": gemini_generate_assessment,
-            "generate_audio_check": gemini_generate_audio_check,
-            "generate_name_request": gemini_generate_name_request
-        }
-    elif provider == "gpt":
-        return {
-            "generate_response": gpt_generate_response,
-            "generate_opening_greeting": gpt_generate_opening_greeting,
-            "generate_assessment": gpt_generate_assessment,
-            "generate_audio_check": gpt_generate_audio_check,
-            "generate_name_request": gpt_generate_name_request
-        }
-    else:
-        raise ValueError(f"Unknown LLM provider: {provider}")
+def _retry_on_quota(func, *args, max_retries=3, **kwargs):
+    """Retry a function call with exponential backoff on Gemini quota errors."""
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            err_str = str(e).lower()
+            is_quota = "429" in err_str or "quota" in err_str or "resourceexhausted" in err_str or "rate" in err_str
+            if is_quota and attempt < max_retries - 1:
+                wait = (attempt + 1) * 15  # 15s, 30s, 45s
+                logger.warning(f"⏳ Gemini quota hit (attempt {attempt + 1}/{max_retries}), retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
+    raise RuntimeError("Unreachable")
+
+
+def get_llm_functions(provider: str = "gemini"):
+    """Get the LLM functions (Gemini)."""
+    return {
+        "generate_response": gemini_generate_response,
+        "generate_opening_greeting": gemini_generate_opening_greeting,
+        "generate_assessment": gemini_generate_assessment,
+        "generate_audio_check": gemini_generate_audio_check,
+        "generate_name_request": gemini_generate_name_request
+    }
 
 
 async def handle_precheck_response(
@@ -639,56 +621,18 @@ async def check_elevenlabs_status():
 
 @app.get("/api/providers")
 async def get_providers():
-    """Get available providers and their models."""
-    from backend.config import VOICE_PRESETS, GEMINI_LIVE_VOICES
+    """Get available voices for interview setup."""
+    from backend.config import GEMINI_LIVE_VOICES, GEMINI_LIVE_VOICE
     return {
         "gemini_live": {
             "voices": [{"id": k, "name": v} for k, v in GEMINI_LIVE_VOICES.items()],
-            "models": [
-                {"id": "gemini-2.5-flash-native-audio-preview-12-2025", "name": "Gemini 2.0 Flash Live — Real-time Voice"},
-            ],
-            "default_model": "gemini-2.5-flash-native-audio-preview-12-2025",
-            "default_voice": "Kore",
-        },
-        "tts": {
-            provider: {
-                "name": config["name"],
-                "models": [
-                    {"id": model_id, "name": model_name}
-                    for model_id, model_name in config["models"].items()
-                ],
-                "default_model": config["default_model"]
-            }
-            for provider, config in TTS_PROVIDERS.items()
-        },
-        "stt": {
-            provider: {
-                "name": config["name"],
-                "models": [
-                    {"id": model_id, "name": model_name}
-                    for model_id, model_name in config["models"].items()
-                ],
-                "default_model": config["default_model"]
-            }
-            for provider, config in STT_PROVIDERS.items()
-        },
-        "llm": {
-            provider: {
-                "name": config["name"],
-                "models": [
-                    {"id": model_id, "name": model_name}
-                    for model_id, model_name in config["models"].items()
-                ],
-                "default_model": config["default_model"]
-            }
-            for provider, config in LLM_PROVIDERS.items()
+            "default_voice": GEMINI_LIVE_VOICE,
         },
         "defaults": {
             "tts_provider": DEFAULT_TTS_PROVIDER,
             "stt_provider": DEFAULT_STT_PROVIDER,
-            "llm_provider": DEFAULT_LLM_PROVIDER
+            "llm_provider": DEFAULT_LLM_PROVIDER,
         },
-        "presets": VOICE_PRESETS
     }
 
 
@@ -1804,6 +1748,128 @@ async def delete_interview(interview_id: str, db: Session = Depends(get_db), cur
     return {"message": "Interview deleted successfully"}
 
 
+class BulkInterviewRequest(BaseModel):
+    interview_ids: list
+
+
+class BulkArchiveRequest(BaseModel):
+    interview_ids: list
+    archive: bool = True
+
+
+class BulkApplicationRequest(BaseModel):
+    application_ids: list
+
+
+class BulkApplicationArchiveRequest(BaseModel):
+    application_ids: list
+    archive: bool = True
+
+
+class BulkJobOfferRequest(BaseModel):
+    offer_ids: list
+
+
+@app.post("/api/admin/interviews/bulk-delete")
+async def bulk_delete_interviews(body: BulkInterviewRequest, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Permanently delete multiple interviews at once."""
+    if not body.interview_ids:
+        raise HTTPException(status_code=400, detail="No interview IDs provided")
+
+    deleted = db.query(DBInterview).filter(DBInterview.interview_id.in_(body.interview_ids)).delete(synchronize_session='fetch')
+    db.commit()
+
+    logger.info(f"Bulk deleted {deleted} interviews")
+    return {"message": f"{deleted} interview(s) deleted successfully", "deleted_count": deleted}
+
+
+@app.post("/api/admin/interviews/bulk-archive")
+async def bulk_archive_interviews(body: BulkArchiveRequest, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Archive or unarchive multiple interviews at once."""
+    if not body.interview_ids:
+        raise HTTPException(status_code=400, detail="No interview IDs provided")
+
+    interviews = db.query(DBInterview).filter(DBInterview.interview_id.in_(body.interview_ids)).all()
+    for interview in interviews:
+        interview.is_archived = body.archive
+        interview.archived_at = datetime.utcnow() if body.archive else None
+    db.commit()
+
+    action = "archived" if body.archive else "restored"
+    logger.info(f"Bulk {action} {len(interviews)} interviews")
+    return {"message": f"{len(interviews)} interview(s) {action} successfully", "count": len(interviews)}
+
+
+@app.post("/api/admin/applications/bulk-delete")
+async def bulk_delete_applications(body: BulkApplicationRequest, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Permanently delete multiple applications and their related data."""
+    if not body.application_ids:
+        raise HTTPException(status_code=400, detail="No application IDs provided")
+
+    # Delete related interviews and CV evaluations first
+    db.query(DBInterview).filter(DBInterview.application_id.in_(body.application_ids)).delete(synchronize_session='fetch')
+    db.query(DBCVEvaluation).filter(DBCVEvaluation.application_id.in_(body.application_ids)).delete(synchronize_session='fetch')
+    deleted = db.query(DBApplication).filter(DBApplication.application_id.in_(body.application_ids)).delete(synchronize_session='fetch')
+    db.commit()
+
+    logger.info(f"Bulk deleted {deleted} applications")
+    return {"message": f"{deleted} application(s) deleted successfully", "deleted_count": deleted}
+
+
+@app.post("/api/admin/applications/bulk-archive")
+async def bulk_archive_applications(body: BulkApplicationArchiveRequest, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Archive or unarchive multiple applications at once."""
+    if not body.application_ids:
+        raise HTTPException(status_code=400, detail="No application IDs provided")
+
+    applications = db.query(DBApplication).filter(DBApplication.application_id.in_(body.application_ids)).all()
+    for application in applications:
+        application.is_archived = body.archive
+        application.archived_at = datetime.utcnow() if body.archive else None
+    db.commit()
+
+    action = "archived" if body.archive else "restored"
+    logger.info(f"Bulk {action} {len(applications)} applications")
+    return {"message": f"{len(applications)} application(s) {action} successfully", "count": len(applications)}
+
+
+@app.post("/api/admin/job-offers/bulk-delete")
+async def bulk_delete_job_offers(body: BulkJobOfferRequest, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Permanently delete multiple job offers."""
+    if not body.offer_ids:
+        raise HTTPException(status_code=400, detail="No job offer IDs provided")
+
+    deleted = db.query(DBJobOffer).filter(DBJobOffer.offer_id.in_(body.offer_ids)).delete(synchronize_session='fetch')
+    db.commit()
+
+    logger.info(f"Bulk deleted {deleted} job offers")
+    return {"message": f"{deleted} job offer(s) deleted successfully", "deleted_count": deleted}
+
+
+class BulkCandidateRequest(BaseModel):
+    candidate_ids: list
+
+
+@app.post("/api/admin/candidates/bulk-delete")
+async def bulk_delete_candidates(body: BulkCandidateRequest, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Permanently delete multiple candidates and all their related data."""
+    if not body.candidate_ids:
+        raise HTTPException(status_code=400, detail="No candidate IDs provided")
+
+    # Get all applications for these candidates
+    app_ids = [a.application_id for a in db.query(DBApplication).filter(DBApplication.candidate_id.in_(body.candidate_ids)).all()]
+    if app_ids:
+        db.query(DBInterview).filter(DBInterview.application_id.in_(app_ids)).delete(synchronize_session='fetch')
+        db.query(DBCVEvaluation).filter(DBCVEvaluation.application_id.in_(app_ids)).delete(synchronize_session='fetch')
+        db.query(DBApplication).filter(DBApplication.application_id.in_(app_ids)).delete(synchronize_session='fetch')
+
+    deleted = db.query(DBCandidate).filter(DBCandidate.candidate_id.in_(body.candidate_ids)).delete(synchronize_session='fetch')
+    db.commit()
+
+    logger.info(f"Bulk deleted {deleted} candidates")
+    return {"message": f"{deleted} candidate(s) deleted successfully", "deleted_count": deleted}
+
+
 @app.delete("/api/admin/candidates/{candidate_id}")
 async def delete_candidate(candidate_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
     """Permanently delete a candidate and all their applications and interviews."""
@@ -2041,6 +2107,94 @@ async def get_interview_details(interview_id: str, db: Session = Depends(get_db)
     }
 
 
+@app.post("/api/admin/interviews/{interview_id}/regenerate-assessment")
+async def regenerate_interview_assessment(interview_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Regenerate the assessment for a completed interview (e.g., after API quota is reloaded)."""
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    if not interview.conversation_history:
+        raise HTTPException(status_code=400, detail="No conversation history available to generate assessment")
+
+    history = json.loads(interview.conversation_history)
+    if len(history) < 2:
+        raise HTTPException(status_code=400, detail="Conversation too short to generate assessment")
+
+    # Build context from available data
+    ctx = {}
+    if interview.application_id:
+        app = db.query(DBApplication).filter(DBApplication.application_id == interview.application_id).first()
+        if app:
+            ctx["candidate_cv_text"] = app.cv_text[:3000] if app.cv_text else ""
+            ctx["confirmed_candidate_name"] = interview.candidate_name
+            job = db.query(DBJobOffer).filter(DBJobOffer.offer_id == interview.job_offer_id).first()
+            if job:
+                ctx["job_title"] = job.title
+
+    # Run in background thread to not block the request
+    def _regen_bg():
+        try:
+            from backend.database import SessionLocal
+            db_bg = SessionLocal()
+            try:
+                from backend.services.gemini_llm import generate_assessment as gen_assess
+                assessment = gen_assess(history, interview_context=ctx)
+                recommendation = extract_recommendation(assessment)
+                detailed_scores = extract_detailed_scores(assessment)
+
+                iv = db_bg.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+                if iv:
+                    iv.assessment = assessment
+                    iv.recommendation = recommendation
+                    iv.evaluation_scores = json.dumps(detailed_scores)
+
+                    if iv.application_id:
+                        app_rec = db_bg.query(DBApplication).filter(
+                            DBApplication.application_id == iv.application_id
+                        ).first()
+                        if app_rec:
+                            app_rec.interview_assessment = assessment
+                            app_rec.interview_recommendation = recommendation
+                            app_rec.updated_at = datetime.now()
+
+                    db_bg.commit()
+                    logger.info(f"✅ Assessment regenerated for interview {interview_id}")
+
+                    # Also regenerate transcript annotations
+                    try:
+                        feedback_lang = None
+                        if iv.application_id:
+                            app_check = db_bg.query(DBApplication).filter(
+                                DBApplication.application_id == iv.application_id
+                            ).first()
+                            if app_check and app_check.required_languages:
+                                langs = json.loads(app_check.required_languages)
+                                feedback_lang = langs[0] if langs else None
+                        from backend.services.language_llm_gemini import generate_transcript_annotations as gem_ann
+                        annotations = gem_ann(conversation_history=history, feedback_language=feedback_lang)
+                        hist_copy = json.loads(iv.conversation_history)
+                        for i, msg in enumerate(hist_copy):
+                            if msg["role"] == "user":
+                                idx_str = str(i)
+                                if idx_str in annotations:
+                                    msg["ai_comment"] = annotations[idx_str]
+                        iv.conversation_history = json.dumps(hist_copy)
+                        db_bg.commit()
+                    except Exception as ann_err:
+                        logger.error(f"Transcript annotation regen failed: {ann_err}")
+            except Exception as e:
+                logger.error(f"❌ Assessment regeneration failed: {e}")
+                db_bg.rollback()
+            finally:
+                db_bg.close()
+        except Exception as e:
+            logger.error(f"❌ Assessment regeneration thread error: {e}")
+
+    import threading
+    threading.Thread(target=_regen_bg, daemon=True).start()
+    return {"message": "Assessment regeneration started. It will be available shortly."}
+
+
 @app.get("/api/admin/interviews/{interview_id}/recording")
 async def get_interview_recording(interview_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
     """Get the interview recording audio file."""
@@ -2054,16 +2208,21 @@ async def get_interview_recording(interview_id: str, db: Session = Depends(get_d
     if not interview.recording_audio:
         raise HTTPException(status_code=404, detail="No recording available for this interview")
 
-    # If stored in S3, fetch and return as base64 for backward compat
-    if interview.recording_audio.startswith("s3://"):
-        audio_key = interview.recording_audio[5:]
+    # Determine audio format from the stored key/data
+    audio_key = interview.recording_audio
+    if audio_key.startswith("s3://"):
+        audio_key = audio_key[5:]
+
+    # If it looks like a file path/key (not raw base64), fetch from storage
+    if "/" in audio_key or audio_key.endswith((".wav", ".mp3", ".webm")):
         audio_bytes = s3_download(audio_key, local_dir=UPLOADS_DIR)
         if not audio_bytes:
             raise HTTPException(status_code=404, detail="Recording file not found")
+        audio_format = "wav" if audio_key.endswith(".wav") else "mp3"
         return {
             "interview_id": interview_id,
             "recording_audio": base64.b64encode(audio_bytes).decode('utf-8'),
-            "audio_format": "mp3"
+            "audio_format": audio_format
         }
 
     return {
@@ -2073,18 +2232,64 @@ async def get_interview_recording(interview_id: str, db: Session = Depends(get_d
     }
 
 
+@app.get("/api/admin/interviews/{interview_id}/turn-audio/{audio_key:path}")
+async def get_interview_turn_audio(interview_id: str, audio_key: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Serve a per-turn candidate audio WAV file."""
+    from fastapi.responses import Response
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    audio_bytes = s3_download(audio_key, local_dir=UPLOADS_DIR)
+    if not audio_bytes:
+        raise HTTPException(status_code=404, detail="Turn audio not found")
+    return Response(content=audio_bytes, media_type="audio/wav")
+
+
 @app.get("/api/admin/interviews/{interview_id}/video")
 async def get_interview_video(interview_id: str, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
-    """Get the interview video recording file."""
-    from fastapi.responses import Response
+    """Get the interview video recording or snapshot metadata."""
+    from fastapi.responses import Response, JSONResponse
     interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
     if not interview or not interview.recording_video:
         raise HTTPException(status_code=404, detail="No video recording available")
+
+    # Check if it's snapshot metadata (JSON)
+    try:
+        meta = json.loads(interview.recording_video)
+        if meta.get("type") == "snapshots":
+            return JSONResponse(content=meta)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Legacy: serve video file
     video_bytes = s3_download(interview.recording_video, local_dir=UPLOADS_DIR)
     if not video_bytes:
         raise HTTPException(status_code=404, detail="Video file not found")
     ext = interview.recording_video.rsplit('.', 1)[-1] if '.' in interview.recording_video else "webm"
     return Response(content=video_bytes, media_type=f"video/{ext}")
+
+
+@app.get("/api/admin/interviews/{interview_id}/snapshots/{index}")
+async def get_interview_snapshot(interview_id: str, index: int, db: Session = Depends(get_db), current_admin: DBAdmin = Depends(get_current_admin)):
+    """Get a specific snapshot image."""
+    from fastapi.responses import Response
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview or not interview.recording_video:
+        raise HTTPException(status_code=404, detail="No snapshots available")
+    try:
+        meta = json.loads(interview.recording_video)
+        if meta.get("type") != "snapshots":
+            raise HTTPException(status_code=404, detail="No snapshots for this interview")
+        snaps = meta.get("snapshots", [])
+        if index < 0 or index >= len(snaps):
+            raise HTTPException(status_code=404, detail="Snapshot index out of range")
+        snap_key = snaps[index]["key"]
+        img_bytes = s3_download(snap_key, local_dir=UPLOADS_DIR)
+        if not img_bytes:
+            raise HTTPException(status_code=404, detail="Snapshot file not found")
+        return Response(content=img_bytes, media_type="image/jpeg")
+    except (json.JSONDecodeError, TypeError):
+        raise HTTPException(status_code=404, detail="Invalid snapshot data")
 
 
 # ============================================================
@@ -2287,7 +2492,7 @@ class AsyncInterviewStartRequest(BaseModel):
     tts_model: str = ""
     stt_provider: str = "elevenlabs"
     stt_model: str = ""
-    llm_provider: str = "gpt"  # Use "gpt" instead of "openai" to match config
+    llm_provider: str = "gemini"
     llm_model: str = ""
 
 
@@ -2372,9 +2577,8 @@ async def start_async_interview(
     stt_provider = request.stt_provider or DEFAULT_STT_PROVIDER
     llm_provider = request.llm_provider or DEFAULT_LLM_PROVIDER
     
-    # Normalize provider names (handle "openai" -> "gpt")
-    if llm_provider == "openai" or llm_provider == "gpt":
-        llm_provider = "gpt"
+    # Always use Gemini for LLM
+    llm_provider = "gemini"
     
     tts_model = request.tts_model or TTS_PROVIDERS[tts_provider]["default_model"]
     stt_model = request.stt_model or STT_PROVIDERS[stt_provider]["default_model"]
@@ -2402,24 +2606,31 @@ async def start_async_interview(
         "evaluation_weights": job_offer.evaluation_weights
     }
     
-    # Generate opening greeting/question
+    # Generate opening greeting/question (with retry on quota)
     llm_funcs = get_llm_functions(llm_provider)
-    greeting = llm_funcs["generate_opening_greeting"](
+    greeting = _retry_on_quota(
+        llm_funcs["generate_opening_greeting"],
         model_id=llm_model,
         interview_context=interview_context,
         candidate_name=candidate.full_name
     )
     
-    # Generate audio for greeting
-    tts_func = get_tts_function(tts_provider)
-    audio_data = tts_func(greeting, model_id=tts_model, voice_id=None)
-    audio_base64 = base64.b64encode(audio_data).decode('utf-8')
-    
+    # Generate audio for greeting (with TTS fallback)
+    audio_base64 = ""
+    tts_fallback = False
+    try:
+        tts_func = get_tts_function(tts_provider)
+        audio_data = tts_func(greeting, model_id=tts_model, voice_id=None)
+        audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+    except Exception as tts_err:
+        logger.warning(f"⚠️ TTS failed for async greeting (will use browser fallback): {tts_err}")
+        tts_fallback = True
+
     # Initialize conversation history
     conversation_history = [
         {"role": "assistant", "content": greeting}
     ]
-    
+
     # Store provider preferences for later use
     provider_preferences = {
         "tts_provider": tts_provider,
@@ -2429,7 +2640,7 @@ async def start_async_interview(
         "llm_provider": llm_provider,
         "llm_model": llm_model
     }
-    
+
     # Initialize audio segments with first question
     audio_segments = [{
         "type": "question",
@@ -2439,7 +2650,7 @@ async def start_async_interview(
         "text": greeting,
         "timestamp": datetime.now().isoformat()
     }]
-    
+
     # Update interview status, conversation, and provider preferences
     interview.status = "in_progress"
     interview.conversation_history = json.dumps(conversation_history)
@@ -2447,15 +2658,16 @@ async def start_async_interview(
     if hasattr(interview, 'audio_segments'):
         interview.audio_segments = json.dumps(audio_segments)
     db.commit()
-    
+
     logger.info(f"🎤 Started asynchronous interview: {interview_id} with providers: {llm_provider}/{llm_model}")
-    
+
     return {
         "interview_id": interview_id,
         "question_number": 1,
         "question_text": greeting,
         "question_audio": audio_base64,
         "audio_format": "mp3",
+        "tts_fallback": tts_fallback,
         "status": "in_progress"
     }
 
@@ -2529,24 +2741,30 @@ async def submit_async_answer(
     stt_provider = provider_preferences.get("stt_provider") or DEFAULT_STT_PROVIDER
     stt_model = provider_preferences.get("stt_model") or STT_PROVIDERS[stt_provider]["default_model"]
     
-    # For LLM, ALWAYS use GPT to avoid Gemini quota issues
-    # Force GPT regardless of stored preferences to avoid quota errors
-    llm_provider = "gpt"  # Always use GPT to avoid Gemini quota issues
+    llm_provider = "gemini"
     llm_model = provider_preferences.get("llm_model") or LLM_PROVIDERS[llm_provider]["default_model"]
-    
-    stored_llm = provider_preferences.get("llm_provider")
-    if stored_llm and stored_llm != "gpt" and stored_llm != "openai":
-        logger.warning(f"⚠️ Stored LLM provider was '{stored_llm}' but forcing GPT to avoid quota issues")
     
     logger.info(f"📝 Using providers for async interview: LLM={llm_provider}/{llm_model}, TTS={tts_provider}/{tts_model}, STT={stt_provider}/{stt_model}")
     
-    # Speech to Text — pass language code for better accuracy
-    stt_lang_code = get_language_code(job_offer.interview_start_language or "")
+    # Speech to Text — determine current language from conversation for accurate STT
+    # Start with interview_start_language, but update based on detected language switches
+    stt_lang = job_offer.interview_start_language or "English"
+    lang_keywords = {
+        "French": ["français", "francais", "french", "en français", "continuons en français"],
+        "English": ["english", "anglais", "in english", "let's continue in english", "continue in english"],
+        "Arabic": ["arabic", "arabe", "en arabe", "بالعربية"],
+        "Spanish": ["spanish", "espagnol", "español", "en español"],
+        "German": ["german", "allemand", "deutsch", "auf deutsch"]
+    }
+    for msg in conversation_history:
+        if msg["role"] == "assistant":
+            content_lower = msg["content"].lower()
+            for lang, keywords in lang_keywords.items():
+                if any(keyword in content_lower for keyword in keywords) and stt_lang != lang:
+                    stt_lang = lang
+    stt_lang_code = get_language_code(stt_lang)
     stt_func = get_stt_function(stt_provider)
-    if stt_provider == "cartesia":
-        user_text = stt_func(audio_bytes, audio_format="webm", model_id=stt_model)
-    else:
-        user_text = stt_func(audio_bytes, model_id=stt_model, language_code=stt_lang_code or None)
+    user_text = stt_func(audio_bytes, model_id=stt_model, language_code=stt_lang_code or None)
     
     if not user_text.strip():
         raise HTTPException(status_code=400, detail="Could not transcribe audio. Please try again.")
@@ -2580,15 +2798,7 @@ async def submit_async_answer(
         # Check if we should generate assessment (after a reasonable number of questions)
         question_count = sum(1 for msg in conversation_history if msg["role"] == "assistant")
         
-        # Generate next question or assessment
-        # Ensure we're using GPT (safety check)
-        if llm_provider != "gpt":
-            logger.error(f"❌ CRITICAL: llm_provider is '{llm_provider}' but should be 'gpt'. Forcing GPT.")
-            llm_provider = "gpt"
-            llm_model = LLM_PROVIDERS[llm_provider]["default_model"]
-        
         llm_funcs = get_llm_functions(llm_provider)
-        logger.info(f"🔧 Final LLM provider before calling get_llm_functions: {llm_provider}")
         
         # Track tested languages based on AI language switches tracking
         tested_languages = set()
@@ -2638,13 +2848,6 @@ async def submit_async_answer(
             should_end = question_count >= 10  # absolute maximum questions
         
         if should_end:
-            # Generate assessment
-            assessment = llm_funcs["generate_assessment"](
-                conversation_history=conversation_history,
-                model_id=llm_model,
-                interview_context=interview_context
-            )
-            
             # Save final answer audio segment
             audio_segments = []
             if hasattr(interview, 'audio_segments') and interview.audio_segments:
@@ -2652,7 +2855,7 @@ async def submit_async_answer(
                     audio_segments = json.loads(interview.audio_segments)
                 except:
                     audio_segments = []
-            
+
             # Save candidate's final answer audio
             audio_segments.append({
                 "type": "answer",
@@ -2662,57 +2865,103 @@ async def submit_async_answer(
                 "text": user_text,
                 "timestamp": datetime.now().isoformat()
             })
-            
-            # Update interview
+
+            # Mark as completed immediately so candidate gets instant feedback
             interview.status = "completed"
             interview.completed_at = datetime.now()
-            interview.assessment = assessment
             interview.conversation_history = json.dumps(conversation_history)
             if hasattr(interview, 'audio_segments'):
                 interview.audio_segments = json.dumps(audio_segments)
-            
-            # Determine recommendation
-            recommendation = "recommended"  # Default, could be enhanced with LLM analysis
-            interview.recommendation = recommendation
-            
-            # Update application
             application.interview_completed_at = datetime.now()
-            application.interview_recommendation = recommendation
-            
-            # Generate transcript annotations
-            try:
-                if llm_provider == "gpt":
-                    from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
-                    annotations = gpt_generate_transcript_annotations(conversation_history=conversation_history, model_id=llm_model)
-                else:
-                    from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
-                    annotations = gemini_generate_transcript_annotations(conversation_history=conversation_history, model_id=llm_model)
-                
-                # Update conversation history with annotations
-                for i, msg in enumerate(conversation_history):
-                    if msg["role"] == "user":
-                        idx_str = str(i)
-                        if idx_str in annotations:
-                            msg["ai_comment"] = annotations[idx_str]
-                            
-                # Re-save conversation history with annotations
-                interview.conversation_history = json.dumps(conversation_history)
-            except Exception as e:
-                logger.error(f"❌ Failed to generate or save transcript annotations: {e}")
-            
             db.commit()
-            
-            logger.info(f"✅ Completed asynchronous interview: {interview_id}")
-            
+
+            logger.info(f"✅ Completed asynchronous interview: {interview_id} — generating assessment in background")
+
+            # Generate assessment + annotations in background thread (like the /end endpoint)
+            _bg_interview_id = interview.interview_id
+            _bg_application_id = application.application_id
+            _bg_conv_history = list(conversation_history)
+            _bg_llm_model = llm_model
+            _bg_interview_context = dict(interview_context)
+            _bg_start_lang = interview_context.get("interview_start_language")
+
+            def _run_submit_assessment_bg():
+                try:
+                    from backend.database import SessionLocal
+                    db_bg = SessionLocal()
+                    try:
+                        logger.info(f"📝 [BG] Generating assessment for completed interview: {_bg_interview_id}")
+                        _bg_llm_funcs = get_llm_functions("gemini")
+                        assessment = _bg_llm_funcs["generate_assessment"](
+                            conversation_history=_bg_conv_history,
+                            model_id=_bg_llm_model,
+                            interview_context=_bg_interview_context,
+                        )
+                        recommendation = extract_recommendation(assessment)
+
+                        iv = db_bg.query(DBInterview).filter(DBInterview.interview_id == _bg_interview_id).first()
+                        if iv:
+                            iv.assessment = assessment
+                            iv.recommendation = recommendation
+                            iv.evaluation_scores = json.dumps(extract_detailed_scores(assessment))
+                        app = db_bg.query(DBApplication).filter(DBApplication.application_id == _bg_application_id).first()
+                        if app:
+                            app.interview_assessment = assessment
+                            app.interview_recommendation = recommendation
+                            app.updated_at = datetime.utcnow()
+                        db_bg.commit()
+                        logger.info(f"✅ [BG] Assessment saved for interview: {_bg_interview_id}")
+
+                        # Generate transcript annotations
+                        try:
+                            from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_ann
+                            annotations = gemini_ann(
+                                conversation_history=_bg_conv_history,
+                                model_id=_bg_llm_model,
+                                feedback_language=_bg_start_lang
+                            )
+                            for i, msg in enumerate(_bg_conv_history):
+                                if msg["role"] == "user":
+                                    idx_str = str(i)
+                                    if idx_str in annotations:
+                                        msg["ai_comment"] = annotations[idx_str]
+                            if iv:
+                                iv.conversation_history = json.dumps(_bg_conv_history)
+                                db_bg.commit()
+                            logger.info(f"✅ [BG] Transcript annotations saved for interview: {_bg_interview_id}")
+                        except Exception as e:
+                            logger.error(f"❌ [BG] Transcript annotations failed: {e}")
+                    except Exception as e:
+                        logger.error(f"❌ [BG] Assessment generation failed for {_bg_interview_id}: {e}")
+                        db_bg.rollback()
+                        try:
+                            iv_err = db_bg.query(DBInterview).filter(DBInterview.interview_id == _bg_interview_id).first()
+                            if iv_err and not iv_err.assessment:
+                                error_msg = str(e)
+                                if "quota" in error_msg.lower() or "429" in error_msg or "resource" in error_msg.lower():
+                                    iv_err.assessment = "[ASSESSMENT_FAILED:QUOTA] API quota exceeded. Please reload credits and regenerate the assessment."
+                                else:
+                                    iv_err.assessment = f"[ASSESSMENT_FAILED] Assessment generation failed: {error_msg[:200]}. You can regenerate it from the admin panel."
+                                db_bg.commit()
+                        except Exception:
+                            pass
+                    finally:
+                        db_bg.close()
+                except Exception as e:
+                    logger.error(f"❌ [BG] Background assessment thread error: {e}")
+
+            import threading
+            threading.Thread(target=_run_submit_assessment_bg, daemon=True).start()
+
             return {
                 "interview_id": interview_id,
                 "status": "completed",
-                "assessment": assessment,
-                "recommendation": recommendation
+                "user_text": user_text,
             }
         else:
-            # Generate next question
-            next_question = llm_funcs["generate_response"](
+            # Generate next question (with retry on quota)
+            next_question = _retry_on_quota(
+                llm_funcs["generate_response"],
                 conversation_history=conversation_history[:-1],  # Exclude the just-added user message
                 user_message=user_text,
                 model_id=llm_model,
@@ -2724,11 +2973,17 @@ async def submit_async_answer(
                 import re
                 next_question = re.sub(r'\[INTERVIEW_CONCLUDED\]', '', next_question, flags=re.IGNORECASE).strip()
             
-            # Generate audio for question
-            tts_func = get_tts_function(tts_provider)
-            audio_data = tts_func(next_question, model_id=tts_model, voice_id=None)
-            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
-            
+            # Generate audio for question (with TTS fallback)
+            audio_base64 = ""
+            tts_fallback = False
+            try:
+                tts_func = get_tts_function(tts_provider)
+                audio_data = tts_func(next_question, model_id=tts_model, voice_id=None)
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+            except Exception as tts_err:
+                logger.warning(f"⚠️ TTS failed for async question (will use browser fallback): {tts_err}")
+                tts_fallback = True
+
             # Add assistant response to conversation
             conversation_history.append({"role": "assistant", "content": next_question})
             
@@ -2774,7 +3029,9 @@ async def submit_async_answer(
                 "question_text": next_question,
                 "question_audio": audio_base64,
                 "audio_format": "mp3",
-                "status": "in_progress"
+                "tts_fallback": tts_fallback,
+                "status": "in_progress",
+                "user_text": user_text,
             }
     except Exception as e:
         logger.error(f"❌ Error in submit_async_answer: {str(e)}", exc_info=True)
@@ -2977,7 +3234,7 @@ async def upload_interview_video(
         interview.recording_video = video_key
         db.commit()
         
-        logger.info(f"✅ Video uploaded successfully for interview {interview_id}: {file_path}")
+        logger.info(f"✅ Video uploaded successfully for interview {interview_id}: {video_key}")
         
         return {
             "interview_id": interview_id,
@@ -2988,6 +3245,61 @@ async def upload_interview_video(
     except Exception as e:
         logger.error(f"❌ Error uploading video: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to upload video: {str(e)}")
+
+
+class SnapshotUploadRequest(BaseModel):
+    email: str
+    snapshots: list  # [{timestamp: str, image: str (base64 JPEG)}]
+
+
+@app.post("/api/candidates/interviews/{interview_id}/snapshots")
+async def upload_interview_snapshots(
+    interview_id: str,
+    request: SnapshotUploadRequest,
+    db: Session = Depends(get_db)
+):
+    """Upload periodic identity verification snapshots for an interview."""
+    if db is None:
+        db = next(get_db())
+
+    interview = db.query(DBInterview).filter(DBInterview.interview_id == interview_id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    application = db.query(DBApplication).filter(DBApplication.application_id == interview.application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    candidate = db.query(DBCandidate).filter(DBCandidate.candidate_id == application.candidate_id).first()
+    if not candidate or candidate.email != request.email:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        import base64
+        # Create a composite image grid from snapshots
+        snapshot_keys = []
+        for i, snap in enumerate(request.snapshots):
+            img_bytes = base64.b64decode(snap["image"])
+            snap_key = f"snapshots/{interview_id}/{i:03d}.jpg"
+            s3_upload(img_bytes, snap_key, content_type="image/jpeg", local_dir=UPLOADS_DIR)
+            snapshot_keys.append({
+                "key": snap_key,
+                "timestamp": snap.get("timestamp", "")
+            })
+
+        # Store snapshot metadata as the video field (repurposed)
+        interview.recording_video = json.dumps({
+            "type": "snapshots",
+            "count": len(snapshot_keys),
+            "snapshots": snapshot_keys
+        })
+        db.commit()
+
+        logger.info(f"✅ {len(snapshot_keys)} snapshots uploaded for interview {interview_id}")
+        return {"interview_id": interview_id, "status": "uploaded", "count": len(snapshot_keys)}
+    except Exception as e:
+        logger.error(f"❌ Error uploading snapshots: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to upload snapshots: {str(e)}")
 
 
 class AsyncInterviewEndRequest(BaseModel):
@@ -3118,11 +3430,11 @@ async def end_async_interview(
                     # Generate transcript annotations
                     try:
                         if llm_provider == "gpt":
-                            from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_ann
-                            annotations = gpt_ann(conversation_history=_conv_history, model_id=llm_model)
+                            from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_ann
+                            annotations = gemini_ann(conversation_history=_conv_history, model_id=llm_model, feedback_language=_start_lang)
                         else:
                             from backend.services.language_llm_gemini import generate_transcript_annotations as gem_ann
-                            annotations = gem_ann(conversation_history=_conv_history, model_id=llm_model)
+                            annotations = gem_ann(conversation_history=_conv_history, model_id=llm_model, feedback_language=_start_lang)
 
                         for i, msg in enumerate(_conv_history):
                             if msg["role"] == "user":
@@ -3453,12 +3765,13 @@ async def check_and_handle_time_limit(
                     try:
                         llm_provider_tl = config.get("llm_provider", DEFAULT_LLM_PROVIDER)
                         llm_model_tl = config.get("llm_model", LLM_PROVIDERS[llm_provider_tl]["default_model"])
+                        _tl_ann_lang = conv.interview_start_language if conv else None
                         if llm_provider_tl == "gpt" or llm_provider_tl == "openai":
-                            from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
-                            annotations = gpt_generate_transcript_annotations(conversation_history=history, model_id=llm_model_tl)
+                            from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                            annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model_tl, feedback_language=_tl_ann_lang)
                         else:
                             from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
-                            annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model_tl)
+                            annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model_tl, feedback_language=_tl_ann_lang)
                         
                         for i, msg in enumerate(history):
                             if msg["role"] == "user":
@@ -3701,40 +4014,37 @@ async def websocket_endpoint(websocket: WebSocket):
             
             logger.info(f"📋 Interview context set - Job: {job_offer.title if job_offer else 'Unknown'}, CV: {len(candidate_cv_text)} chars")
             
-            # Store session configuration
+            # Store session configuration — always Gemini Live for real-time
             config = {
-                "tts_provider": init_data.get("tts_provider", DEFAULT_TTS_PROVIDER),
-                "tts_model": init_data.get("tts_model", TTS_PROVIDERS[init_data.get("tts_provider", DEFAULT_TTS_PROVIDER)]["default_model"]),
-                "stt_provider": init_data.get("stt_provider", DEFAULT_STT_PROVIDER),
-                "stt_model": init_data.get("stt_model", STT_PROVIDERS[init_data.get("stt_provider", DEFAULT_STT_PROVIDER)]["default_model"]),
-                "llm_provider": init_data.get("llm_provider", DEFAULT_LLM_PROVIDER),
-                "llm_model": init_data.get("llm_model", LLM_PROVIDERS[init_data.get("llm_provider", DEFAULT_LLM_PROVIDER)]["default_model"]),
-                "evaluation_id": evaluation_id,  # Store for linking (may be None)
-                "application_id": application_id,  # Store for linking (may be None)
-                "interview_id": interview_id,  # Store for linking (may be None)
+                "tts_provider": DEFAULT_TTS_PROVIDER,
+                "tts_model": TTS_PROVIDERS[DEFAULT_TTS_PROVIDER]["default_model"],
+                "stt_provider": DEFAULT_STT_PROVIDER,
+                "stt_model": STT_PROVIDERS[DEFAULT_STT_PROVIDER]["default_model"],
+                "llm_provider": DEFAULT_LLM_PROVIDER,
+                "llm_model": LLM_PROVIDERS[DEFAULT_LLM_PROVIDER]["default_model"],
+                "evaluation_id": evaluation_id,
+                "application_id": application_id,
+                "interview_id": interview_id,
                 "job_offer_id": job_offer_id,
                 "candidate_cv_text": candidate_cv_text,
-                "candidate_name": candidate_name_from_cv if 'candidate_name_from_cv' in locals() and candidate_name_from_cv else None,  # CV name (source of truth)
-                "interview_duration_minutes": interview_duration_minutes  # Interview duration from job offer
+                "candidate_name": candidate_name_from_cv if 'candidate_name_from_cv' in locals() and candidate_name_from_cv else None,
+                "interview_duration_minutes": interview_duration_minutes
             }
             session_configs[conversation_id] = config
-            
+
             # Track interview start time for time limit
             interview_start_times[conversation_id] = time.time()
-            
+
             logger.info(f"🚀 New interview started: {conversation_id}")
             logger.info(f"⏱️ Time limit: {interview_duration_minutes} minutes")
-            logger.info(f"📋 TTS: {config['tts_provider']} / {config['tts_model']}")
-            logger.info(f"📋 STT: {config['stt_provider']} / {config['stt_model']}")
-            logger.info(f"📋 LLM: {config['llm_provider']} / {config['llm_model']}")
 
             # ============================================================
-            # GEMINI LIVE MODE — native audio-in/audio-out, sub-second latency
+            # GEMINI LIVE MODE — native audio-in/audio-out (always used for real-time)
             # ============================================================
-            if init_data.get("mode") == "gemini_live":
+            if True:  # Always use Gemini Live for real-time interviews
                 logger.info("🎙️ GEMINI LIVE MODE — real-time audio conversation")
                 from backend.services.gemini_live import GeminiLiveSession
-                from backend.config import GOOGLE_API_KEY, build_interviewer_system_prompt
+                from backend.config import GOOGLE_API_KEY, GEMINI_LIVE_MODEL, GEMINI_LIVE_VOICE, build_interviewer_system_prompt
 
                 # Build system prompt with full interview context
                 live_system_prompt = build_interviewer_system_prompt(
@@ -3749,56 +4059,216 @@ async def websocket_endpoint(websocket: WebSocket):
                     custom_questions=custom_questions,
                     evaluation_weights=evaluation_weights,
                 )
+                # Parse required languages for multi-language support
+                _req_langs_list = []
+                if required_languages:
+                    try:
+                        _req_langs_list = json.loads(required_languages) if required_languages else []
+                    except Exception:
+                        _req_langs_list = []
+
                 # Add live-specific instructions
-                live_system_prompt += """
+                live_system_prompt += f"""
 
 LIVE CONVERSATION RULES:
 - Start by greeting the candidate warmly, then begin the interview.
 - Speak naturally and conversationally — this is a real-time voice call.
 - Keep responses SHORT (1-3 sentences). Do not monologue.
 - Wait for the candidate to finish speaking before responding.
-- When time is up, clearly conclude by saying "This concludes our interview. Thank you for your time" and wish them good luck."""
+- LANGUAGE: You MUST speak in {interview_start_language or 'the specified language'} unless this is a multi-language interview and it is time to switch.
+- CRITICAL RULE — ALWAYS WAIT FOR ANSWERS: Every time you ask a question, you MUST wait for the candidate to respond before doing ANYTHING else. Never ask a question and then immediately follow up with another question, a language switch, or a farewell. The flow is strictly: ask ONE question → STOP and LISTEN → candidate answers → only THEN decide what to do next.
+- BACKGROUND NOISE: If you hear only silence, clicks, typing, or background noise without actual speech, do NOT treat it as a response. Simply wait patiently. Only proceed when the candidate says actual words. If the audio input seems like noise rather than speech, say something like "I didn't catch that, could you please repeat?" instead of moving on.
+- ENDING THE INTERVIEW: Do NOT end the interview on your own. The system manages timing and language switching. Just keep asking questions and waiting for answers. When the system tells you it is time to end, say a warm goodbye and call end_interview.
+- If the candidate explicitly asks to end the interview, you may say goodbye and call end_interview.
+- You MUST call end_interview after your farewell — this is how the system knows the interview is over.
+- Do NOT wait for the candidate to respond after your farewell — call end_interview right away.
+- NEVER ask the candidate if they have any questions. This is a one-way evaluation interview. Just conclude politely and call end_interview."""
 
-                live_model = init_data.get("gemini_live_model", "gemini-2.5-flash-native-audio-preview-12-2025")
-                live_voice = init_data.get("gemini_live_voice", "Kore")
+                # Add multi-language instructions if applicable
+                if len(_req_langs_list) > 1:
+                    live_system_prompt += f"""
 
+MULTI-LANGUAGE INTERVIEW — MANDATORY:
+- This interview REQUIRES testing the candidate in ALL of these languages: {', '.join(_req_langs_list)}.
+- Start in {interview_start_language or _req_langs_list[0]}.
+- LANGUAGE SWITCHING: The system will inject a context hint telling you when to switch languages. When you see this hint, incorporate the switch into your NEXT natural response — acknowledge the candidate's answer, then smoothly transition to the new language. Example: respond to their answer briefly, then say (IN THE NEW LANGUAGE) "Let's continue in English" and ask ONE question in the new language.
+- CRITICAL: ALWAYS wait for the candidate to fully answer your current question BEFORE switching. The flow is: ask question → WAIT for answer → hear answer → THEN switch in your response. Never switch without hearing the answer first.
+- Each question must be asked ENTIRELY in ONE language. Never blend two languages in the same turn.
+- When switching, announce the switch IN THE NEW LANGUAGE (not the old one). Your entire response after the switch must be in the new language.
+- DO NOT end the interview or call end_interview until the system tells you to. The system handles interview timing automatically.
+- DO NOT anticipate or prepare for a language switch. Do not mention upcoming switches. Just ask questions naturally in the current language.
+- When speaking a language, speak it natively and fluently — no accent from another language."""
+
+                live_model = GEMINI_LIVE_MODEL
+                live_voice = init_data.get("gemini_live_voice", GEMINI_LIVE_VOICE)
+
+                # Determine language code for transcription
+                live_lang_code = get_language_code(interview_start_language or "") or "en"
                 session = GeminiLiveSession(
                     api_key=GOOGLE_API_KEY,
                     model=live_model,
                     system_prompt=live_system_prompt,
                     voice=live_voice,
+                    language=live_lang_code,
                 )
 
                 ws_lock = asyncio.Lock()
                 output_transcript_buffer = []
-                input_transcript_buffer = []
                 input_flush_task = None
                 live_concluded = False
+                interview_ending = False  # Set when end_interview is called, live_concluded set after turnComplete
+                interview_ending_timer = [None]  # Fallback timer to force live_concluded
+                user_is_speaking = False
+                ai_is_speaking = False  # True while AI audio is being generated (prevents echo detection)
+                echo_cooldown_until = [0.0]  # timestamp until which echo suppression is active (post-turn playback delay)
+                # Audio capture: collect all candidate PCM chunks for combined recording + per-turn STT
+                all_input_audio_chunks = []    # full recording (base64 PCM chunks)
+                turn_input_audio_chunks = []   # per-turn buffer for dedicated STT
+                gemini_input_transcript_buffer = []  # Gemini's own input transcription — fallback if ElevenLabs STT fails
+                per_turn_audio_data = []       # list of (turn_index, pcm_bytes) for per-answer audio
+                turn_counter = [0]             # mutable counter for turn numbering
+                # Full interview recording timeline: interleaved candidate (16kHz) + AI (24kHz) audio
+                recording_timeline = []        # list of ("input"|"output", base64_pcm_chunk)
 
-                async def send_user_transcript_update():
-                    """Send current accumulated user transcript to frontend for live display."""
-                    if not input_transcript_buffer:
-                        return
-                    full_text = " ".join(input_transcript_buffer).strip()
-                    if not full_text:
-                        return
-                    async with ws_lock:
-                        try:
-                            await websocket.send_json({
-                                "type": "live_user_transcript",
-                                "text": full_text,
-                            })
-                        except Exception:
-                            pass
+                # Track the current expected language for STT
+                current_expected_language = interview_start_language or "French"
+                current_language_code = live_lang_code  # ISO code like "fr", "en"
+
+                # Multi-language: track AI question count per language for switch timing
+                ai_turn_count = [0]                  # total AI turns
+                questions_in_current_lang = [0]      # questions in current language
+                switch_sent = [False]                 # whether we already sent a switch command this language
+
+                def _transcribe_pcm_with_elevenlabs(pcm_chunks: list, lang_code: str) -> str:
+                    """Send buffered PCM audio to ElevenLabs Scribe v2 for high-quality transcription."""
+                    import base64, struct, io
+                    try:
+                        # Merge PCM chunks into raw bytes
+                        raw_parts = []
+                        for chunk in pcm_chunks:
+                            try:
+                                raw_parts.append(base64.b64decode(chunk))
+                            except Exception:
+                                pass
+                        if not raw_parts:
+                            return ""
+                        pcm_data = b"".join(raw_parts)
+                        # Need at least 0.3s of audio (16kHz * 2 bytes * 0.3s = 9600 bytes)
+                        if len(pcm_data) < 9600:
+                            return ""
+                        # Build WAV in memory for ElevenLabs API
+                        sr = 16000
+                        wav_buf = io.BytesIO()
+                        wav_buf.write(b"RIFF")
+                        wav_buf.write(struct.pack('<I', 36 + len(pcm_data)))
+                        wav_buf.write(b"WAVE")
+                        wav_buf.write(b"fmt ")
+                        wav_buf.write(struct.pack('<IHHIIHH', 16, 1, 1, sr, sr * 2, 2, 16))
+                        wav_buf.write(b"data")
+                        wav_buf.write(struct.pack('<I', len(pcm_data)))
+                        wav_buf.write(pcm_data)
+                        wav_bytes = wav_buf.getvalue()
+                        # Call ElevenLabs STT with explicit language
+                        from backend.services.elevenlabs_stt import speech_to_text as el_stt
+                        text = el_stt(wav_bytes, audio_format="wav", language_code=lang_code)
+                        return text.strip() if text else ""
+                    except Exception as e:
+                        error_msg = str(e).lower()
+                        if "quota" in error_msg or "429" in error_msg or "account" in error_msg or "limit" in error_msg:
+                            logger.warning(f"⚠️ ElevenLabs STT quota/account error: {e} — Gemini inputTranscription will be used as fallback")
+                        else:
+                            logger.warning(f"ElevenLabs STT failed: {e}")
+                        return ""
 
                 async def finalize_user_transcript():
-                    """Finalize the buffered user transcript into conversation history."""
-                    if not input_transcript_buffer:
+                    """Transcribe buffered user audio via ElevenLabs STT (explicit language) and add to conversation.
+                    Falls back to Gemini's inputTranscription if ElevenLabs STT fails (e.g. quota exhausted)."""
+                    nonlocal user_is_speaking
+                    # Snapshot and clear Gemini transcript buffer regardless of audio chunks
+                    gemini_fallback_text = " ".join(gemini_input_transcript_buffer).strip() if gemini_input_transcript_buffer else ""
+                    gemini_input_transcript_buffer.clear()
+
+                    if not turn_input_audio_chunks:
+                        # No audio chunks but Gemini may have transcribed — use as fallback
+                        user_is_speaking = False
+                        if gemini_fallback_text and len(gemini_fallback_text) >= 2:
+                            logger.info(f"📝 No audio chunks but Gemini transcribed: '{gemini_fallback_text[:80]}...'")
+                            cleaned_text = gemini_fallback_text
+                            conversation.add_message("candidate", cleaned_text)
+                            async with ws_lock:
+                                try:
+                                    await websocket.send_json({
+                                        "type": "live_user_transcript",
+                                        "text": cleaned_text,
+                                    })
+                                except Exception:
+                                    pass
                         return
-                    full_text = " ".join(input_transcript_buffer).strip()
-                    input_transcript_buffer.clear()
-                    if full_text:
-                        conversation.add_message("candidate", full_text)
+                    # Take a snapshot of the chunks and clear the buffer
+                    chunks_to_transcribe = list(turn_input_audio_chunks)
+                    turn_input_audio_chunks.clear()
+                    user_is_speaking = False
+                    if chunks_to_transcribe:
+                        # Build per-turn PCM bytes for later upload
+                        import base64 as _b64
+                        raw_parts = []
+                        for chunk in chunks_to_transcribe:
+                            try:
+                                raw_parts.append(_b64.b64decode(chunk))
+                            except Exception:
+                                pass
+                        turn_pcm = b"".join(raw_parts) if raw_parts else b""
+
+                        # Skip very short audio that's likely noise (less than 0.2s at 16kHz 16-bit mono)
+                        if len(turn_pcm) < 6400:
+                            logger.debug(f"Skipping very short audio chunk ({len(turn_pcm)} bytes) — likely noise")
+                            return
+
+                        # Run ElevenLabs STT in executor (blocking I/O)
+                        cleaned_text = await asyncio.get_event_loop().run_in_executor(
+                            None, _transcribe_pcm_with_elevenlabs, chunks_to_transcribe, current_language_code
+                        )
+
+                        # Fallback to Gemini transcription if ElevenLabs returned nothing
+                        if not cleaned_text or len(cleaned_text.strip()) < 2:
+                            if gemini_fallback_text and len(gemini_fallback_text) >= 2:
+                                logger.warning(f"⚠️ ElevenLabs STT returned empty — falling back to Gemini transcription: '{gemini_fallback_text[:80]}...'")
+                                cleaned_text = gemini_fallback_text
+                            else:
+                                logger.debug(f"Skipping empty/trivial transcription (both ElevenLabs and Gemini empty)")
+                                return
+
+                        # Filter out STT artifacts — ElevenLabs returns these for non-speech audio
+                        _noise_phrases = {
+                            "silence", "(silence)", "[silence]",
+                            "blank audio", "(blank audio)", "[blank audio]",
+                            "no speech", "(no speech)", "[no speech]",
+                            "inaudible", "(inaudible)", "[inaudible]",
+                            "background noise", "(background noise)", "[background noise]",
+                            "bruit de fond", "(bruit de fond)",
+                            "musique", "(musique)", "music", "(music)",
+                        }
+                        if cleaned_text.strip().lower() in _noise_phrases:
+                            logger.debug(f"Skipping STT noise artifact: '{cleaned_text}'")
+                            return
+                        # Save per-turn audio data for later upload
+                        turn_idx = turn_counter[0]
+                        turn_counter[0] += 1
+                        if len(turn_pcm) >= 9600:  # at least 0.3s of audio
+                            per_turn_audio_data.append((turn_idx, turn_pcm))
+                            conversation.add_message("candidate", cleaned_text, audio_turn=turn_idx)
+                        else:
+                            conversation.add_message("candidate", cleaned_text)
+                        # Send finalized user text to frontend
+                        async with ws_lock:
+                            try:
+                                await websocket.send_json({
+                                    "type": "live_user_transcript",
+                                    "text": cleaned_text,
+                                })
+                            except Exception:
+                                pass
+
 
                 async def schedule_input_flush():
                     """Wait for a pause in user speech, then finalize."""
@@ -3808,6 +4278,14 @@ LIVE CONVERSATION RULES:
                     input_flush_task = None
 
                 async def on_live_audio(pcm_base64: str):
+                    nonlocal ai_is_speaking
+                    ai_is_speaking = True
+                    # Don't play or record AI audio after end_interview was called
+                    # (Gemini may generate a duplicate farewell from the toolResponse ack)
+                    if interview_ending:
+                        return
+                    # Capture AI audio for full interview recording
+                    recording_timeline.append(("output", pcm_base64))
                     async with ws_lock:
                         try:
                             await websocket.send_json({
@@ -3825,31 +4303,322 @@ LIVE CONVERSATION RULES:
                     output_transcript_buffer.append(text)
 
                 async def on_live_input_transcription(text: str):
-                    """Transcription of what the user said — buffer, show live, debounce finalize."""
-                    nonlocal input_flush_task
-                    text = text.strip()
-                    if not text:
+                    """Gemini's transcription of user speech — used as 'user is speaking' signal
+                    AND as fallback transcript if ElevenLabs STT fails (e.g. quota exhausted)."""
+                    nonlocal input_flush_task, user_is_speaking
+                    if not text or not text.strip():
                         return
-                    input_transcript_buffer.append(text)
-                    # Send progressive update to frontend (replaces previous pending message)
-                    await send_user_transcript_update()
-                    # Reset the debounce timer for finalizing into conversation history
+                    # Ignore input transcription while AI is speaking (echo from speakers)
+                    if ai_is_speaking:
+                        return
+                    # Ignore echo from speakers still playing after AI turn completed
+                    import time as _time_mod
+                    if _time_mod.time() < echo_cooldown_until[0]:
+                        return
+                    # Accumulate Gemini's transcription as fallback for ElevenLabs STT
+                    gemini_input_transcript_buffer.append(text.strip())
+                    # Notify frontend that user is speaking (only once per speaking turn)
+                    if not user_is_speaking:
+                        user_is_speaking = True
+                        async with ws_lock:
+                            try:
+                                await websocket.send_json({"type": "user_speaking", "speaking": True})
+                            except Exception:
+                                pass
+                    # Reset the debounce timer — when user stops speaking for 2s, finalize via ElevenLabs STT
                     if input_flush_task:
                         input_flush_task.cancel()
                     input_flush_task = asyncio.create_task(schedule_input_flush())
 
+                async def on_live_interview_end(reason: str):
+                    """Called when Gemini invokes the end_interview function.
+                    Returns False to reject if not enough questions asked or untested languages remain.
+                    Uses two-phase shutdown: sets interview_ending first, then live_concluded
+                    only after the next turnComplete processes the last user answer."""
+                    nonlocal interview_ending
+                    logger.info(f"🔔 end_interview called: reason={reason}, ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()}, q_in_lang={questions_in_current_lang[0]}")
+
+                    # Guard 1: reject premature ending — need at least 4 AI turns
+                    # (unless candidate explicitly requested to end)
+                    if reason != "candidate_requested" and ai_turn_count[0] < 4:
+                        logger.warning(f"🚫 Rejected end_interview: only {ai_turn_count[0]} questions asked (minimum 4)")
+                        return {"reason": (
+                            "REJECTED: The interview has barely started. You have only asked "
+                            f"{ai_turn_count[0]} question(s) — the minimum is 4. "
+                            "Continue asking questions. Do NOT attempt to end the interview again until you have asked more questions."
+                        )}
+
+                    # Guard 2: reject if untested languages remain in multi-language interviews
+                    if _req_langs_list and len(_req_langs_list) > 1 and reason != "candidate_requested":
+                        untested = [l for l in _req_langs_list if l not in conversation.get_tested_languages()]
+                        if untested:
+                            next_lang = untested[0]
+                            logger.warning(f"🚫 Rejected end_interview: untested languages remain: {untested}")
+                            # Update language tracking for the forced switch
+                            injected_language_target[0] = next_lang
+                            switch_sent[0] = True
+                            logger.info(f"🔄 Forcing language switch to {next_lang} via rejection response")
+                            return {"reason": (
+                                f"REJECTED: You have NOT yet tested the candidate in {next_lang}. "
+                                f"This is a MANDATORY multi-language interview requiring ALL of: {', '.join(_req_langs_list)}. "
+                                f"You MUST switch to {next_lang} NOW. "
+                                f"In your next response: announce IN {next_lang} that you will continue in {next_lang}, "
+                                f"then ask ONE question entirely in {next_lang}. "
+                                f"Do NOT end the interview. Do NOT say goodbye. Just switch languages and ask a question."
+                            )}
+
+                    logger.info(f"Gemini Live: end_interview accepted (reason: {reason})")
+                    interview_ending = True
+                    # DON'T set live_concluded here — wait for turnComplete to finalize last answer
+                    # Notify frontend that the AI ended the interview
+                    async with ws_lock:
+                        try:
+                            await websocket.send_json({
+                                "type": "interview_ended",
+                                "reason": reason,
+                            })
+                        except Exception:
+                            pass
+                    # Fallback: force live_concluded after 8 seconds if turnComplete never arrives
+                    async def _force_conclude():
+                        nonlocal live_concluded
+                        await asyncio.sleep(8)
+                        if not live_concluded:
+                            logger.warning("⚠️ Forcing live_concluded after 8s timeout (turnComplete didn't arrive)")
+                            live_concluded = True
+                    interview_ending_timer[0] = asyncio.create_task(_force_conclude())
+
+                def _detect_language_of_text(text: str, candidate_languages: list) -> str:
+                    """Detect which of the candidate languages a text is written in.
+                    Uses simple heuristic: check for language-specific common words/patterns."""
+                    text_lower = text.lower()
+                    # Language detection via common function words
+                    lang_markers = {
+                        "French": ["je ", "vous ", "nous ", "est ", "les ", "des ", "une ", "dans ", "pour ", "avec ", "très ", "que ", "qui ", "c'est", "merci", "bonjour", "comment", "parlez", "avez"],
+                        "English": ["the ", "is ", "are ", "you ", "your ", "have ", "what ", "how ", "this ", "that ", "with ", "would ", "could ", "about ", "thank ", "hello", "please", "great"],
+                        "Arabic": ["في ", "من ", "على ", "إلى ", "هل ", "ما ", "كيف ", "هذا ", "أن ", "لا ", "نعم", "مرحبا", "شكرا"],
+                        "Spanish": ["el ", "la ", "los ", "las ", "es ", "son ", "usted ", "cómo ", "qué ", "por ", "para ", "con ", "muy ", "bien ", "gracias", "hola"],
+                        "German": ["der ", "die ", "das ", "ist ", "sind ", "haben ", "wie ", "was ", "für ", "mit ", "sehr ", "gut ", "danke", "hallo", "bitte"],
+                        "Italian": ["il ", "la ", "le ", "è ", "sono ", "come ", "che ", "per ", "con ", "molto ", "bene ", "grazie", "buongiorno"],
+                        "Portuguese": ["o ", "a ", "os ", "as ", "é ", "são ", "como ", "que ", "para ", "com ", "muito ", "bem ", "obrigado"],
+                        "Dutch": ["de ", "het ", "is ", "zijn ", "hoe ", "wat ", "voor ", "met ", "heel ", "goed ", "dank", "hallo"],
+                        "Turkish": ["bir ", "bu ", "ve ", "için ", "ile ", "nasıl ", "ne ", "çok ", "iyi ", "teşekkür", "merhaba"],
+                        "Chinese": ["的", "是", "在", "了", "不", "有", "这", "我", "你", "他"],
+                        "Japanese": ["の", "は", "が", "を", "に", "で", "と", "も", "です", "ます"],
+                        "Korean": ["는", "은", "이", "가", "를", "에", "의", "도", "입니다"],
+                    }
+                    scores = {}
+                    for lang in candidate_languages:
+                        markers = lang_markers.get(lang, [])
+                        if not markers:
+                            continue
+                        score = sum(1 for m in markers if m in text_lower)
+                        scores[lang] = score
+                    if scores:
+                        best = max(scores, key=scores.get)
+                        if scores[best] >= 2:  # need at least 2 markers
+                            return best
+                    return None
+
+                # Language switch state
+                switch_context_injected = [False]  # True after we buffered a switch hint via send_context
+                switch_context_target = [None]     # which language the hint targets
+                injected_language_target = [None]   # target language from forced injection, for STT code update
+                switch_turn_in_progress = [False]   # True during forced injection response (suppress echo)
+
+                async def _hint_language_switch(target_lang: str):
+                    """Buffer a language switch instruction into Gemini's context WITHOUT forcing a response.
+
+                    Uses send_context (turnComplete=false) so the instruction is buffered until
+                    the candidate next speaks and VAD completes the turn. Gemini then processes
+                    the candidate's answer + our hint together, producing ONE natural response
+                    that acknowledges the answer AND switches language. No interruption.
+                    """
+                    try:
+                        switch_context_injected[0] = True
+                        switch_context_target[0] = target_lang
+                        await session.send_context(
+                            f"[SYSTEM INSTRUCTION — NOT SPOKEN TO CANDIDATE] "
+                            f"IMPORTANT: After the candidate finishes answering your current question, "
+                            f"you must switch to {target_lang}. "
+                            f"In your NEXT response: briefly acknowledge their answer, then smoothly "
+                            f"transition by announcing IN {target_lang} (not the current language) that "
+                            f"you will continue in {target_lang}. Then ask ONE question in {target_lang}. "
+                            f"CRITICAL: Wait for the candidate's answer first. Do NOT switch immediately. "
+                            f"The announcement and question must BOTH be entirely in {target_lang}. "
+                            f"From now on, speak ONLY in {target_lang} until told otherwise."
+                        )
+                        logger.info(f"🔄 Language switch HINT buffered (turnComplete=false): → {target_lang}")
+                    except Exception as e:
+                        logger.error(f"Failed to buffer language switch hint: {e}")
+
+                async def _force_language_switch(target_lang: str):
+                    """Force an immediate language switch by sending turnComplete=true.
+
+                    Used as a fallback when the hint approach didn't work (Gemini ignored the hint).
+                    This WILL interrupt the current flow and force Gemini to respond immediately.
+                    """
+                    nonlocal user_is_speaking, input_flush_task
+                    try:
+                        injected_language_target[0] = target_lang
+                        switch_turn_in_progress[0] = True
+                        turn_input_audio_chunks.clear()
+                        gemini_input_transcript_buffer.clear()
+                        user_is_speaking = False
+                        if input_flush_task:
+                            input_flush_task.cancel()
+                        await session.send_text(
+                            f"[SYSTEM INSTRUCTION — NOT SPOKEN TO CANDIDATE] "
+                            f"You must now switch to speaking {target_lang}. "
+                            f"In your VERY NEXT response: briefly announce IN {target_lang} that "
+                            f"you will continue in {target_lang}, then ask ONE question in {target_lang}. "
+                            f"The announcement AND question must be entirely in {target_lang}. "
+                            f"From now on, speak ONLY in {target_lang} until told otherwise."
+                        )
+                        logger.info(f"🔄 Language switch FORCED (turnComplete=true): → {target_lang}")
+                    except Exception as e:
+                        logger.error(f"Failed to force language switch: {e}")
+
+                end_instruction_sent = [False]
+
+                async def _inject_end_instruction():
+                    """Tell Gemini it's time to wrap up the interview."""
+                    if end_instruction_sent[0] or interview_ending:
+                        return
+                    end_instruction_sent[0] = True
+                    try:
+                        await session.send_text(
+                            "[SYSTEM INSTRUCTION — NOT SPOKEN TO CANDIDATE] "
+                            "You have now asked enough questions in all required languages. "
+                            "It is time to end the interview. "
+                            "In your NEXT response: thank the candidate warmly for their time, "
+                            "say a brief farewell, then call the end_interview function. "
+                            "Do NOT ask any more questions. Just say goodbye and call end_interview."
+                        )
+                        logger.info("📩 End instruction sent to Gemini Live")
+                    except Exception as e:
+                        logger.error(f"Failed to inject end instruction: {e}")
+
                 async def on_live_turn_complete():
-                    nonlocal live_concluded, input_flush_task
-                    # AI started responding — finalize any pending user transcript
-                    if input_flush_task:
-                        input_flush_task.cancel()
-                        input_flush_task = None
-                    await finalize_user_transcript()
+                    nonlocal input_flush_task, current_expected_language, current_language_code, live_concluded, ai_is_speaking, user_is_speaking
+                    ai_is_speaking = False
+                    # Post-turn echo cooldown: speakers may still be playing buffered audio
+                    import time as _time_mod
+                    echo_cooldown_until[0] = _time_mod.time() + 1.5
+                    # AI finished speaking — finalize any pending user transcript
+                    # BUT: skip this if the current turn was a switch response, because
+                    # audio accumulated during the switch announcement is echo/noise, not real speech
+                    if not switch_turn_in_progress[0]:
+                        if input_flush_task:
+                            input_flush_task.cancel()
+                            input_flush_task = None
+                        await finalize_user_transcript()
+                    else:
+                        # Discard any audio that accumulated during the switch announcement
+                        turn_input_audio_chunks.clear()
+                        gemini_input_transcript_buffer.clear()
+                        user_is_speaking = False
+                        if input_flush_task:
+                            input_flush_task.cancel()
+                            input_flush_task = None
                     # Use output transcription buffer for AI text
                     full_text = " ".join(output_transcript_buffer).strip()
                     output_transcript_buffer.clear()
+
+                    # If interview is ending (end_interview was called), set live_concluded NOW
+                    # This ensures finalize_user_transcript() ran BEFORE we exit the main loop
+                    if interview_ending:
+                        if full_text:
+                            conversation.add_message("interviewer", full_text)
+                        # Cancel the fallback timer
+                        if interview_ending_timer[0]:
+                            interview_ending_timer[0].cancel()
+                            interview_ending_timer[0] = None
+                        logger.info("✅ Final turnComplete processed — setting live_concluded")
+                        live_concluded = True
+                        async with ws_lock:
+                            try:
+                                await websocket.send_json({
+                                    "type": "live_turn_complete",
+                                    "text": full_text or "",
+                                })
+                            except Exception:
+                                pass
+                        return
+
                     if full_text:
+                        # Check if this is a forced switch turn (response to send_text injection)
+                        is_forced_switch_turn = switch_turn_in_progress[0]
+                        switch_turn_in_progress[0] = False
+
                         conversation.add_message("interviewer", full_text)
+                        ai_turn_count[0] += 1
+
+                        # Track which language the AI is speaking & detect switches
+                        if _req_langs_list and len(_req_langs_list) > 1:
+                            # If we force-injected a language switch, apply the target language
+                            if injected_language_target[0]:
+                                forced_lang = injected_language_target[0]
+                                injected_language_target[0] = None
+                                if forced_lang != current_expected_language:
+                                    current_expected_language = forced_lang
+                                    current_language_code = get_language_code(forced_lang) or current_language_code
+                                    conversation.add_tested_language(forced_lang)
+                                    conversation.set_current_language(forced_lang)
+                                    questions_in_current_lang[0] = 1
+                                    switch_sent[0] = False
+                                    switch_context_injected[0] = False
+                                    switch_context_target[0] = None
+                                    logger.info(f"🌐 Language force-switched to: {forced_lang} ({current_language_code})")
+                                else:
+                                    questions_in_current_lang[0] += 1
+                            else:
+                                # Detect language organically from the AI's text
+                                detected_lang = _detect_language_of_text(full_text, _req_langs_list)
+                                if detected_lang and detected_lang != current_expected_language:
+                                    # AI switched language (either from our hint or organically)
+                                    current_expected_language = detected_lang
+                                    current_language_code = get_language_code(detected_lang) or current_language_code
+                                    conversation.add_tested_language(detected_lang)
+                                    conversation.set_current_language(detected_lang)
+                                    questions_in_current_lang[0] = 1
+                                    switch_sent[0] = False
+                                    # Clear the hint state — switch was successful
+                                    switch_context_injected[0] = False
+                                    switch_context_target[0] = None
+                                    logger.info(f"🌐 Language switched to: {detected_lang} ({current_language_code})")
+                                else:
+                                    # Same language — increment counter and mark tested
+                                    questions_in_current_lang[0] += 1
+                                    conversation.add_tested_language(current_expected_language)
+
+                            # --- LANGUAGE SWITCH LOGIC ---
+                            # Strategy: At Q3, buffer a hint (turnComplete=false) so Gemini
+                            # incorporates the switch into its NEXT natural response.
+                            # If Gemini ignores the hint by Q5+, force it (turnComplete=true).
+                            untested = [l for l in _req_langs_list if l not in conversation.get_tested_languages()]
+
+                            if untested and not switch_sent[0] and not is_forced_switch_turn:
+                                if questions_in_current_lang[0] >= 3:
+                                    # Buffer the switch hint — does NOT force a response
+                                    next_lang = untested[0]
+                                    switch_sent[0] = True
+                                    logger.info(f"🔄 Buffering language switch hint: {current_expected_language} → {next_lang}")
+                                    asyncio.create_task(_hint_language_switch(next_lang))
+
+                            elif untested and switch_context_injected[0] and questions_in_current_lang[0] >= 5:
+                                # Hint was ignored for 2+ turns — force the switch
+                                next_lang = switch_context_target[0] or untested[0]
+                                logger.warning(f"⚠️ Hint was ignored ({questions_in_current_lang[0]} questions in {current_expected_language}), forcing switch → {next_lang}")
+                                switch_context_injected[0] = False
+                                switch_context_target[0] = None
+                                asyncio.create_task(_force_language_switch(next_lang))
+
+                            # All languages tested and enough questions — tell AI to wrap up
+                            if not untested and ai_turn_count[0] >= 5 and questions_in_current_lang[0] >= 2 and not interview_ending:
+                                logger.info(f"✅ All languages tested, {ai_turn_count[0]} questions asked — injecting end instruction")
+                                asyncio.create_task(_inject_end_instruction())
+
                         async with ws_lock:
                             try:
                                 await websocket.send_json({
@@ -3858,36 +4627,12 @@ LIVE CONVERSATION RULES:
                                 })
                             except Exception:
                                 pass
-                        # Detect conclusion by common farewell phrases
-                        conclusion_phrases = [
-                            "this concludes", "interview is complete",
-                            "end of the interview", "conclude the interview",
-                            "thank you for your time", "we are done",
-                            "that wraps up", "interview is over",
-                            "good luck", "bonne chance",
-                            "entretien est termin", "fin de l'entretien",
-                        ]
-                        text_lower = full_text.lower()
-                        if any(phrase in text_lower for phrase in conclusion_phrases):
-                            logger.info("Gemini Live detected conclusion in AI speech")
-                            live_concluded = True
-                            # Wait for the audio to finish playing
-                            await asyncio.sleep(5)
-                            # Generate assessment
-                            try:
-                                from backend.services.gemini_llm import generate_assessment
-                                history = conversation.get_history_for_llm()
-                                ctx = conversation.get_interview_context()
-                                assessment = generate_assessment(history, interview_context=ctx)
-                                async with ws_lock:
-                                    await websocket.send_json({
-                                        "type": "assessment",
-                                        "assessment": assessment,
-                                    })
-                            except Exception as e:
-                                logger.error(f"Assessment error: {e}")
 
                 async def on_live_interrupted():
+                    nonlocal ai_is_speaking
+                    ai_is_speaking = False
+                    import time as _time_mod
+                    echo_cooldown_until[0] = _time_mod.time() + 0.5  # shorter cooldown on interruption
                     async with ws_lock:
                         try:
                             await websocket.send_json({"type": "live_interrupted"})
@@ -3900,6 +4645,7 @@ LIVE CONVERSATION RULES:
                 session.on_interrupted(on_live_interrupted)
                 session.on_input_transcription(on_live_input_transcription)
                 session.on_output_transcription(on_live_output_transcription)
+                session.on_interview_end(on_live_interview_end)
 
                 try:
                     await session.connect()
@@ -3919,28 +4665,140 @@ LIVE CONVERSATION RULES:
                     )
                     logger.info("📢 Sent initial prompt to Gemini Live to start talking")
 
-                    # Live message loop
-                    while session.connected and not live_concluded:
+                    reconnect_attempts = [0]
+                    max_reconnects = 2
+
+                    # Live message loop — exits when AI concludes, user ends, or session drops
+                    while not live_concluded:
+                        if not session.connected:
+                            # Check if we should attempt reconnection
+                            untested_langs = [l for l in _req_langs_list if l not in conversation.get_tested_languages()] if _req_langs_list and len(_req_langs_list) > 1 else []
+                            if not interview_ending and untested_langs and reconnect_attempts[0] < max_reconnects:
+                                reconnect_attempts[0] += 1
+                                logger.warning(f"⚠️ Gemini Live disconnected with untested languages {untested_langs} — attempting reconnect ({reconnect_attempts[0]}/{max_reconnects})")
+                                try:
+                                    await session.close()
+                                    # Rebuild session with existing conversation context
+                                    history_summary = conversation.get_history_for_llm()
+                                    context_lines = []
+                                    for msg in history_summary[-6:]:  # last 6 messages for context
+                                        role = "Interviewer" if msg["role"] == "interviewer" else "Candidate"
+                                        context_lines.append(f"{role}: {msg['content'][:200]}")
+                                    context_text = "\n".join(context_lines)
+
+                                    session = GeminiLiveSession(
+                                        api_key=GOOGLE_API_KEY,
+                                        model=live_model,
+                                        system_prompt=live_system_prompt,
+                                        voice=live_voice,
+                                        language=live_lang_code,
+                                    )
+                                    # Re-register callbacks
+                                    session.on_audio(on_live_audio)
+                                    session.on_text(on_live_text)
+                                    session.on_turn_complete(on_live_turn_complete)
+                                    session.on_interrupted(on_live_interrupted)
+                                    session.on_input_transcription(on_live_input_transcription)
+                                    session.on_output_transcription(on_live_output_transcription)
+                                    session.on_interview_end(on_live_interview_end)
+                                    await session.connect()
+
+                                    # Resume with context and language switch
+                                    next_lang = untested_langs[0]
+                                    await session.send_text(
+                                        f"[SYSTEM INSTRUCTION] You are resuming an ongoing interview. "
+                                        f"Here is the recent conversation:\n{context_text}\n\n"
+                                        f"Continue the interview naturally. Switch to {next_lang} now. "
+                                        f"Briefly acknowledge the reconnection if needed, then ask a question in {next_lang}."
+                                    )
+                                    # Update language tracking
+                                    current_expected_language = next_lang
+                                    current_language_code = get_language_code(next_lang) or current_language_code
+                                    questions_in_current_lang[0] = 0
+                                    switch_sent[0] = False
+                                    switch_context_injected[0] = False
+                                    switch_context_target[0] = None
+                                    logger.info(f"✅ Gemini Live reconnected successfully — switching to {next_lang}")
+                                    async with ws_lock:
+                                        try:
+                                            await websocket.send_json({"type": "live_reconnected"})
+                                        except Exception:
+                                            pass
+                                    continue
+                                except Exception as reconn_err:
+                                    logger.error(f"❌ Gemini Live reconnect failed: {reconn_err}")
+                                    break
+                            else:
+                                logger.warning(f"⚠️ Gemini Live session disconnected — exiting loop (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()}, ending={interview_ending})")
+                                break
                         try:
                             message = await asyncio.wait_for(websocket.receive(), timeout=1.0)
                         except asyncio.TimeoutError:
+                            # Check if interview time has expired
+                            elapsed = (time.time() - interview_start_times.get(conversation_id, time.time())) / 60
+                            if elapsed >= interview_duration_minutes + 1:
+                                logger.info(f"⏰ Interview time limit exceeded ({elapsed:.0f} min) — forcing exit (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()})")
+                                break
+                            # Time-based language switch: if past halfway and untested languages remain
+                            if _req_langs_list and len(_req_langs_list) > 1 and not switch_sent[0]:
+                                halfway = interview_duration_minutes / 2
+                                if elapsed >= halfway:
+                                    untested = [l for l in _req_langs_list if l not in conversation.get_tested_languages()]
+                                    if untested:
+                                        next_lang = untested[0]
+                                        switch_sent[0] = True
+                                        # Time pressure — use hint first, force will kick in at Q5+
+                                        asyncio.create_task(_hint_language_switch(next_lang))
+                                        logger.info(f"⏰ Past halfway ({elapsed:.1f}/{interview_duration_minutes} min), hinted switch to {next_lang}")
                             continue
-                        except Exception:
+                        except Exception as recv_err:
+                            logger.warning(f"⚠️ WebSocket receive error: {recv_err} (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()})")
                             break
                         if "text" in message:
                             data = json.loads(message["text"])
                             msg_type = data.get("type")
 
                             if msg_type == "live_audio":
+                                all_input_audio_chunks.append(data["audio"])
+                                turn_input_audio_chunks.append(data["audio"])
+                                recording_timeline.append(("input", data["audio"]))
                                 await session.send_audio(data["audio"])
+                                # Backup speech detection via PCM audio level
+                                # (Gemini inputTranscription can be delayed for first utterance)
+                                # Only check when AI is NOT speaking to avoid echo false-positives
+                                import time as _time_mod
+                                if not user_is_speaking and not ai_is_speaking and _time_mod.time() >= echo_cooldown_until[0]:
+                                    try:
+                                        import base64 as _b64_detect, struct as _struct_detect
+                                        _pcm_raw = _b64_detect.b64decode(data["audio"])
+                                        if len(_pcm_raw) >= 4:
+                                            _n_samples = len(_pcm_raw) // 2
+                                            _samples = _struct_detect.unpack(f'<{_n_samples}h', _pcm_raw[:_n_samples*2])
+                                            _rms = (sum(s*s for s in _samples) / _n_samples) ** 0.5
+                                            if _rms > 800:  # Speech threshold (silence is ~0-200)
+                                                user_is_speaking = True
+                                                async with ws_lock:
+                                                    try:
+                                                        await websocket.send_json({"type": "user_speaking", "speaking": True})
+                                                    except Exception:
+                                                        pass
+                                                # Also start debounce timer like inputTranscription does
+                                                if input_flush_task:
+                                                    input_flush_task.cancel()
+                                                input_flush_task = asyncio.create_task(schedule_input_flush())
+                                    except Exception:
+                                        pass
                             elif msg_type == "end_interview":
-                                logger.info("User ended Gemini Live interview")
+                                logger.info(f"👤 User ended Gemini Live interview (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()})")
                                 break
                         elif "bytes" in message:
                             pass
                 except Exception as e:
-                    if "disconnect" not in str(e).lower():
-                        logger.error(f"Gemini Live error: {e}")
+                    err_str = str(e).lower()
+                    if "disconnect" in err_str or "closed" in err_str:
+                        logger.info(f"📡 Client disconnected from Gemini Live (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()}, ending={interview_ending})")
+                    else:
+                        logger.error(f"Gemini Live error: {e} (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()})")
                         try:
                             await websocket.send_json({
                                 "type": "error",
@@ -3949,20 +4807,314 @@ LIVE CONVERSATION RULES:
                         except Exception:
                             pass
                 finally:
+                    logger.info(f"📋 Interview session ending: live_concluded={live_concluded}, interview_ending={interview_ending}, ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()}, history_len={len(conversation.get_history_for_llm()) if conversation else 0}")
+                    # Cancel the fallback interview_ending timer if still running
+                    if interview_ending_timer[0]:
+                        interview_ending_timer[0].cancel()
+                        interview_ending_timer[0] = None
+
+                    # Give the receive loop a moment to process any final turnComplete
+                    # (so finalize_user_transcript runs via on_live_turn_complete for the last answer)
+                    if interview_ending and session.connected:
+                        logger.info("⏳ Waiting for final Gemini messages before closing...")
+                        await asyncio.sleep(2)
+
+                    # Finalize any pending user transcript BEFORE closing the session
+                    if input_flush_task:
+                        input_flush_task.cancel()
+                    await finalize_user_transcript()
+
+                    # Now close the Gemini session
                     await session.close()
-                    # Generate assessment only if not already done by turn_complete
-                    if not live_concluded and conversation and len(conversation.get_history_for_llm()) >= 4:
+
+                    # If AI concluded, wait for the farewell audio to finish playing
+                    if live_concluded or interview_ending:
+                        logger.info("⏳ Waiting for conclusion audio to finish playing...")
+                        await asyncio.sleep(5)
+
+                    # Generate assessment for any interview with conversation history
+                    history = conversation.get_history_for_llm() if conversation else []
+                    if len(history) >= 2:
+                        # Mark interview as completed and save transcript IMMEDIATELY
+                        _fin_config = session_configs.get(conversation_id, {})
+                        _app_id_fin = _fin_config.get("application_id")
+                        _iv_id_fin = _fin_config.get("interview_id")
+                        _iv_fin = None
                         try:
-                            from backend.services.gemini_llm import generate_assessment
-                            history = conversation.get_history_for_llm()
-                            ctx = conversation.get_interview_context()
-                            assessment = generate_assessment(history, interview_context=ctx)
+                            # Look up by interview_id first (most reliable), then application_id
+                            if _iv_id_fin:
+                                _iv_fin = db_ws.query(DBInterview).filter(
+                                    DBInterview.interview_id == _iv_id_fin
+                                ).first()
+                            if not _iv_fin and _app_id_fin:
+                                _iv_fin = db_ws.query(DBInterview).filter(
+                                    DBInterview.application_id == _app_id_fin
+                                ).order_by(DBInterview.created_at.desc()).first()
+
+                            if _iv_fin:
+                                if _iv_fin.status != "completed":
+                                    _iv_fin.status = "completed"
+                                    _iv_fin.completed_at = datetime.now()
+                                # Also update the application
+                                if _iv_fin.application_id:
+                                    _app_fin = db_ws.query(DBApplication).filter(
+                                        DBApplication.application_id == _iv_fin.application_id
+                                    ).first()
+                                    if _app_fin:
+                                        _app_fin.interview_completed_at = datetime.now()
+                                        _app_fin.updated_at = datetime.now()
+                                # Upload per-turn audio files and update history with audio_key
+                                if per_turn_audio_data:
+                                    import struct, io
+                                    for turn_idx, turn_pcm in per_turn_audio_data:
+                                        try:
+                                            sr = 16000
+                                            wav_buf = io.BytesIO()
+                                            wav_buf.write(b"RIFF")
+                                            wav_buf.write(struct.pack('<I', 36 + len(turn_pcm)))
+                                            wav_buf.write(b"WAVE")
+                                            wav_buf.write(b"fmt ")
+                                            wav_buf.write(struct.pack('<IHHIIHH', 16, 1, 1, sr, sr * 2, 2, 16))
+                                            wav_buf.write(b"data")
+                                            wav_buf.write(struct.pack('<I', len(turn_pcm)))
+                                            wav_buf.write(turn_pcm)
+                                            turn_key = f"recordings/{_iv_fin.interview_id}_turn{turn_idx}.wav"
+                                            s3_upload(wav_buf.getvalue(), turn_key, content_type="audio/wav", local_dir=UPLOADS_DIR)
+                                            # Update the matching message in history with audio_key
+                                            for msg in history:
+                                                if msg.get("audio_turn") == turn_idx:
+                                                    msg["audio_key"] = turn_key
+                                                    del msg["audio_turn"]
+                                                    break
+                                            logger.info(f"🔊 Saved per-turn audio turn {turn_idx} ({len(turn_pcm)} bytes) → {turn_key}")
+                                        except Exception as e:
+                                            logger.error(f"Failed to save per-turn audio turn {turn_idx}: {e}")
+                                    # Clean up any remaining audio_turn markers
+                                    for msg in history:
+                                        msg.pop("audio_turn", None)
+                                # Save transcript immediately so admin can see it
+                                _iv_fin.conversation_history = json.dumps(history)
+                                # Save full interview recording (both AI + candidate audio) as WAV to S3
+                                logger.info(f"📊 Audio: {len(recording_timeline)} timeline chunks, {len(per_turn_audio_data)} per-turn segments")
+                                if recording_timeline:
+                                    try:
+                                        import base64, struct, io, array
+
+                                        def _resample_24k_to_16k(pcm_24k_bytes: bytes) -> bytes:
+                                            """Resample 24kHz PCM to 16kHz using linear interpolation (ratio 2:3)."""
+                                            n_samples_in = len(pcm_24k_bytes) // 2
+                                            if n_samples_in < 2:
+                                                return b""
+                                            samples_in = struct.unpack(f'<{n_samples_in}h', pcm_24k_bytes[:n_samples_in * 2])
+                                            # Output sample count: n_in * 16000/24000 = n_in * 2/3
+                                            n_samples_out = int(n_samples_in * 2 / 3)
+                                            if n_samples_out < 1:
+                                                return b""
+                                            out = array.array('h')
+                                            for i in range(n_samples_out):
+                                                # Map output index to input index (fractional)
+                                                src = i * 1.5  # 24000/16000 = 1.5
+                                                idx = int(src)
+                                                frac = src - idx
+                                                if idx + 1 < n_samples_in:
+                                                    val = samples_in[idx] * (1.0 - frac) + samples_in[idx + 1] * frac
+                                                else:
+                                                    val = samples_in[min(idx, n_samples_in - 1)]
+                                                out.append(max(-32768, min(32767, int(val))))
+                                            return out.tobytes()
+
+                                        # Build combined PCM at 16kHz from timeline
+                                        combined_parts = []
+                                        for source, chunk_b64 in recording_timeline:
+                                            try:
+                                                raw = base64.b64decode(chunk_b64)
+                                                if source == "output":
+                                                    # AI audio is 24kHz — resample to 16kHz
+                                                    raw = _resample_24k_to_16k(raw)
+                                                if raw:
+                                                    combined_parts.append(raw)
+                                            except Exception:
+                                                pass
+                                        if combined_parts:
+                                            pcm_data = b"".join(combined_parts)
+                                            # Build WAV header (16kHz, 16-bit, mono)
+                                            sr = 16000
+                                            wav_buf = io.BytesIO()
+                                            wav_buf.write(b"RIFF")
+                                            wav_buf.write(struct.pack('<I', 36 + len(pcm_data)))
+                                            wav_buf.write(b"WAVE")
+                                            wav_buf.write(b"fmt ")
+                                            wav_buf.write(struct.pack('<IHHIIHH', 16, 1, 1, sr, sr * 2, 2, 16))
+                                            wav_buf.write(b"data")
+                                            wav_buf.write(struct.pack('<I', len(pcm_data)))
+                                            wav_buf.write(pcm_data)
+                                            wav_bytes = wav_buf.getvalue()
+                                            audio_key = f"recordings/{_iv_fin.interview_id}.wav"
+                                            s3_upload(wav_bytes, audio_key, content_type="audio/wav", local_dir=UPLOADS_DIR)
+                                            _iv_fin.recording_audio = audio_key
+                                            logger.info(f"💾 Saved full interview recording ({len(pcm_data)} bytes PCM → WAV) to {audio_key}")
+                                    except Exception as e:
+                                        logger.error(f"Failed to save audio recording: {e}")
+                                db_ws.commit()
+                                logger.info(f"✅ Live interview {_iv_fin.interview_id} marked completed with transcript ({len(history)} messages)")
+                            else:
+                                logger.warning(f"⚠️ Could not find interview record to mark completed (interview_id={_iv_id_fin}, application_id={_app_id_fin})")
+                        except Exception as e:
+                            logger.error(f"Failed to mark interview completed: {e}")
+
+                        # Send immediate placeholder to frontend
+                        try:
                             await websocket.send_json({
                                 "type": "assessment",
-                                "assessment": assessment,
+                                "assessment": "**Interview Completed**\n\nThank you for your time! Our HR team will review your application and get back to you soon.\n\nWe appreciate your interest in this position."
                             })
-                        except Exception as e:
-                            logger.error(f"Final assessment error: {e}")
+                        except Exception:
+                            pass
+
+                        # Log tested languages before assessment
+                        if _req_langs_list and len(_req_langs_list) > 1:
+                            tested = conversation.get_tested_languages()
+                            untested = [l for l in _req_langs_list if l not in tested]
+                            logger.info(f"🌐 Assessment: Tested languages: {list(tested)}, Untested: {untested}")
+
+                        # Run assessment + DB write in background
+                        _history_f = list(history)
+                        _ctx_f = dict(conversation.get_interview_context()) if conversation.get_interview_context() else {}
+                        _config_f = dict(session_configs.get(conversation_id, {}))
+                        _candidate_name_f = conversation.get_candidate_name() or _config_f.get("candidate_name")
+                        _feedback_language_f = interview_start_language or None
+
+                        def _run_live_final_assessment_bg():
+                            try:
+                                from backend.database import SessionLocal
+                                db_bg = SessionLocal()
+                                try:
+                                    from backend.services.gemini_llm import generate_assessment as gen_assess
+                                    assessment = gen_assess(_history_f, interview_context=_ctx_f)
+                                    recommendation = extract_recommendation(assessment)
+                                    detailed_scores = extract_detailed_scores(assessment)
+
+                                    application_id = _config_f.get("application_id")
+                                    if not application_id:
+                                        evaluation_id = _config_f.get("evaluation_id")
+                                        if evaluation_id:
+                                            if evaluation_id in cv_evaluations:
+                                                application_id = cv_evaluations[evaluation_id].get("application_id")
+                                            if not application_id:
+                                                cv_eval = db_bg.query(DBCVEvaluation).filter(
+                                                    DBCVEvaluation.evaluation_id == evaluation_id
+                                                ).first()
+                                                if cv_eval:
+                                                    application_id = cv_eval.application_id
+
+                                    job_offer_id = _config_f.get("job_offer_id")
+                                    cv_text = _config_f.get("candidate_cv_text", "")
+
+                                    interview_rec = None
+                                    _bg_iv_id = _config_f.get("interview_id")
+                                    if _bg_iv_id:
+                                        interview_rec = db_bg.query(DBInterview).filter(
+                                            DBInterview.interview_id == _bg_iv_id
+                                        ).first()
+                                    if not interview_rec and application_id:
+                                        interview_rec = db_bg.query(DBInterview).filter(
+                                            DBInterview.application_id == application_id
+                                        ).order_by(DBInterview.created_at.desc()).first()
+
+                                    if not interview_rec:
+                                        interview_rec = DBInterview(
+                                            application_id=application_id,
+                                            job_offer_id=job_offer_id or "",
+                                            candidate_name=_candidate_name_f,
+                                            cv_text=cv_text[:5000] if cv_text else None,
+                                            status="completed",
+                                            assessment=assessment,
+                                            recommendation=recommendation,
+                                            evaluation_scores=json.dumps(detailed_scores),
+                                            conversation_history=json.dumps(_history_f),
+                                            completed_at=datetime.now()
+                                        )
+                                        db_bg.add(interview_rec)
+                                    else:
+                                        interview_rec.status = "completed"
+                                        interview_rec.assessment = assessment
+                                        interview_rec.recommendation = recommendation
+                                        interview_rec.evaluation_scores = json.dumps(detailed_scores)
+                                        interview_rec.conversation_history = json.dumps(_history_f)
+                                        interview_rec.completed_at = datetime.now()
+
+                                    if application_id:
+                                        app = db_bg.query(DBApplication).filter(
+                                            DBApplication.application_id == application_id
+                                        ).first()
+                                        if app:
+                                            app.interview_completed_at = datetime.now()
+                                            app.interview_assessment = assessment
+                                            app.interview_recommendation = recommendation
+                                            app.updated_at = datetime.now()
+
+                                    db_bg.commit()
+                                    logger.info(f"✅ [BG] Gemini Live assessment stored: {interview_rec.interview_id}")
+
+                                    # Generate transcript annotations
+                                    try:
+                                        from backend.services.language_llm_gemini import generate_transcript_annotations as gem_ann
+                                        annotations = gem_ann(conversation_history=_history_f, feedback_language=_feedback_language_f)
+                                        for i, msg in enumerate(_history_f):
+                                            if msg["role"] == "user":
+                                                idx_str = str(i)
+                                                if idx_str in annotations:
+                                                    msg["ai_comment"] = annotations[idx_str]
+                                        interview_rec.conversation_history = json.dumps(_history_f)
+                                        db_bg.commit()
+                                        logger.info(f"✅ [BG] Live transcript annotations saved: {interview_rec.interview_id}")
+                                    except Exception as e:
+                                        logger.error(f"❌ [BG] Live transcript annotations failed: {e}")
+
+                                except Exception as e:
+                                    logger.error(f"❌ [BG] Gemini Live assessment error: {e}")
+                                    db_bg.rollback()
+                                    # Save error info so admin can see it and regenerate later
+                                    try:
+                                        _iv_err = None
+                                        _bg_iv_id_err = _config_f.get("interview_id")
+                                        if _bg_iv_id_err:
+                                            _iv_err = db_bg.query(DBInterview).filter(
+                                                DBInterview.interview_id == _bg_iv_id_err
+                                            ).first()
+                                        if _iv_err and not _iv_err.assessment:
+                                            error_msg = str(e)
+                                            if "quota" in error_msg.lower() or "429" in error_msg or "resource" in error_msg.lower():
+                                                _iv_err.assessment = "[ASSESSMENT_FAILED:QUOTA] API quota exceeded. Please reload credits and regenerate the assessment."
+                                            else:
+                                                _iv_err.assessment = f"[ASSESSMENT_FAILED] Assessment generation failed: {error_msg[:200]}. You can regenerate it from the admin panel."
+                                            db_bg.commit()
+                                            logger.info(f"💾 Saved assessment error marker for interview {_bg_iv_id_err}")
+                                    except Exception as save_err:
+                                        logger.error(f"Failed to save assessment error marker: {save_err}")
+                                finally:
+                                    db_bg.close()
+                            except Exception as e:
+                                logger.error(f"❌ [BG] Gemini Live assessment thread error: {e}")
+
+                        import threading
+                        threading.Thread(target=_run_live_final_assessment_bg, daemon=True).start()
+                    else:
+                        # Not enough history — still send a completion message
+                        try:
+                            await websocket.send_json({
+                                "type": "assessment",
+                                "assessment": "**Interview Ended**\n\nThank you for your time. The interview was too short to generate a full assessment."
+                            })
+                        except Exception:
+                            pass
+
+                    # Close WebSocket so frontend knows the interview is over
+                    logger.info("🔌 Closing WebSocket after Gemini Live session ended")
+                    try:
+                        await websocket.close(code=1000, reason="Interview concluded")
+                    except Exception:
+                        pass
 
                 return  # Exit WebSocket handler after live mode
 
@@ -4049,6 +5201,18 @@ LIVE CONVERSATION RULES:
 
                         # Send immediate response — candidate doesn't wait for assessment
                         if is_interview_phase and len(history) >= 2:
+                            # Mark interview as completed IMMEDIATELY to prevent restart
+                            _app_id = config.get("application_id")
+                            if _app_id:
+                                _iv = db_ws.query(DBInterview).filter(
+                                    DBInterview.application_id == _app_id
+                                ).order_by(DBInterview.created_at.desc()).first()
+                                if _iv and _iv.status == "pending":
+                                    _iv.status = "completed"
+                                    _iv.completed_at = datetime.now()
+                                    db_ws.commit()
+                                    logger.info(f"✅ Interview {_iv.interview_id} marked completed immediately")
+
                             await websocket.send_json({
                                 "type": "assessment",
                                 "assessment": "**Interview Completed**\n\nThank you for your time! Our HR team will review your application and get back to you soon.\n\nWe appreciate your interest in this position."
@@ -4060,6 +5224,7 @@ LIVE CONVERSATION RULES:
                             _config = dict(config)
                             _conv_id = conv_id
                             _candidate_name = conv.get_candidate_name() or config.get("candidate_name")
+                            _classic_feedback_lang = conv.interview_start_language or None
 
                             def _run_classic_assessment_bg():
                                 try:
@@ -4136,11 +5301,11 @@ LIVE CONVERSATION RULES:
                                         # Generate transcript annotations
                                         try:
                                             if llm_prov == "gpt" or llm_prov == "openai":
-                                                from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_ann
-                                                annotations = gpt_ann(conversation_history=_history, model_id=llm_mod)
+                                                from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_ann
+                                                annotations = gemini_ann(conversation_history=_history, model_id=llm_mod, feedback_language=_classic_feedback_lang)
                                             else:
                                                 from backend.services.language_llm_gemini import generate_transcript_annotations as gem_ann
-                                                annotations = gem_ann(conversation_history=_history, model_id=llm_mod)
+                                                annotations = gem_ann(conversation_history=_history, model_id=llm_mod, feedback_language=_classic_feedback_lang)
 
                                             for i, msg in enumerate(_history):
                                                 if msg["role"] == "user":
@@ -4157,6 +5322,16 @@ LIVE CONVERSATION RULES:
                                     except Exception as e:
                                         logger.error(f"❌ [BG] Classic assessment error: {e}")
                                         db_bg.rollback()
+                                        try:
+                                            if interview_rec and not interview_rec.assessment:
+                                                error_msg = str(e)
+                                                if "quota" in error_msg.lower() or "429" in error_msg or "resource" in error_msg.lower():
+                                                    interview_rec.assessment = "[ASSESSMENT_FAILED:QUOTA] API quota exceeded. Please reload credits and regenerate the assessment."
+                                                else:
+                                                    interview_rec.assessment = f"[ASSESSMENT_FAILED] Assessment generation failed: {error_msg[:200]}. You can regenerate it from the admin panel."
+                                                db_bg.commit()
+                                        except Exception:
+                                            pass
                                     finally:
                                         db_bg.close()
                                 except Exception as e:
@@ -4516,13 +5691,14 @@ LIVE CONVERSATION RULES:
                                     logger.info(f"✅ Interview assessment stored: interview_id={interview.interview_id}, recommendation={recommendation}")
                                     
                                     # Generate transcript annotations (AI feedback)
+                                    _ws_ann_lang = conversation.interview_start_language if conversation else None
                                     try:
                                         if config.get("llm_provider", DEFAULT_LLM_PROVIDER) == "gpt":
-                                            from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
-                                            annotations = gpt_generate_transcript_annotations(conversation_history=history, model_id=llm_model)
+                                            from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                            annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model, feedback_language=_ws_ann_lang)
                                         else:
                                             from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
-                                            annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model)
+                                            annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model, feedback_language=_ws_ann_lang)
                                         
                                         # Update conversation history with annotations
                                         for i, msg in enumerate(history):
@@ -4870,13 +6046,14 @@ LIVE CONVERSATION RULES:
                                 logger.info(f"✅ Interview assessment stored: interview_id={interview.interview_id}, recommendation={recommendation}")
                                 
                                 # Generate transcript annotations (AI feedback)
+                                _rt_ann_lang = conversation.interview_start_language if conversation else None
                                 try:
                                     if config.get("llm_provider", DEFAULT_LLM_PROVIDER) == "gpt":
-                                        from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
-                                        annotations = gpt_generate_transcript_annotations(conversation_history=history, model_id=llm_model)
+                                        from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                        annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model, feedback_language=_rt_ann_lang)
                                     else:
                                         from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
-                                        annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model)
+                                        annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model, feedback_language=_rt_ann_lang)
                                     
                                     # Update conversation history with annotations
                                     for i, msg in enumerate(history):
@@ -5185,13 +6362,14 @@ LIVE CONVERSATION RULES:
                                 logger.info(f"✅ Interview assessment stored: interview_id={interview.interview_id}, recommendation={recommendation}")
                                 
                                 # Generate transcript annotations (AI feedback)
+                                _rt_ann_lang = conversation.interview_start_language if conversation else None
                                 try:
                                     if config.get("llm_provider", DEFAULT_LLM_PROVIDER) == "gpt":
-                                        from backend.services.language_llm_gpt import generate_transcript_annotations as gpt_generate_transcript_annotations
-                                        annotations = gpt_generate_transcript_annotations(conversation_history=history, model_id=llm_model)
+                                        from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                        annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model, feedback_language=_rt_ann_lang)
                                     else:
                                         from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
-                                        annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model)
+                                        annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model, feedback_language=_rt_ann_lang)
                                     
                                     # Update conversation history with annotations
                                     for i, msg in enumerate(history):
@@ -5264,4 +6442,5 @@ LIVE CONVERSATION RULES:
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    from backend.config import SERVER_HOST, SERVER_PORT
+    uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)

@@ -1,6 +1,6 @@
-import React, { useState } from 'react'
+import React, { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useApplications, useArchiveApplication, useDeleteApplication } from '../../hooks/useApplications'
+import { useApplications, useArchiveApplication, useDeleteApplication, useBulkDeleteApplications, useBulkArchiveApplications } from '../../hooks/useApplications'
 import { useJobOffers } from '../../hooks/useJobOffers'
 import PageHeader from '../../components/shared/PageHeader'
 import StatusBadge from '../../components/shared/StatusBadge'
@@ -11,7 +11,7 @@ import { DATE_PRESETS, getDateRange } from '../../lib/constants'
 import { toast } from 'sonner'
 import {
   Search, FileText, Eye, Archive, ArchiveRestore, Trash2,
-  RefreshCw, Loader2, Filter,
+  RefreshCw, Loader2, CheckSquare, Square, MinusSquare,
 } from 'lucide-react'
 
 export default function ApplicationsPage() {
@@ -21,11 +21,17 @@ export default function ApplicationsPage() {
     date_from: '', date_to: '', date_preset: 'all', show_archived: false,
   })
   const [deleteId, setDeleteId] = useState(null)
+  const [selectedIds, setSelectedIds] = useState(new Set())
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
 
   const { data: applications = [], isLoading, refetch } = useApplications(filters)
   const { data: jobOffers = [] } = useJobOffers()
   const archiveMutation = useArchiveApplication()
   const deleteMutation = useDeleteApplication()
+  const bulkDeleteMutation = useBulkDeleteApplications()
+  const bulkArchiveMutation = useBulkArchiveApplications()
+
+  const applicationIds = useMemo(() => applications.map(a => a.application_id), [applications])
 
   const handleFilterChange = (key, value) => {
     if (key === 'date_from' || key === 'date_to') {
@@ -44,6 +50,7 @@ export default function ApplicationsPage() {
     try {
       await archiveMutation.mutateAsync({ id, isArchived })
       toast.success(isArchived ? 'Application restored' : 'Application archived')
+      setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next })
     } catch {
       toast.error('Failed to update application')
     }
@@ -55,10 +62,59 @@ export default function ApplicationsPage() {
       await deleteMutation.mutateAsync(deleteId)
       toast.success('Application deleted')
       setDeleteId(null)
+      setSelectedIds(prev => { const next = new Set(prev); next.delete(deleteId); return next })
     } catch {
       toast.error('Failed to delete application')
     }
   }
+
+  // Selection
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === applicationIds.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(applicationIds))
+    }
+  }
+
+  const allSelected = applicationIds.length > 0 && selectedIds.size === applicationIds.length
+  const someSelected = selectedIds.size > 0 && selectedIds.size < applicationIds.length
+  const selectionCount = selectedIds.size
+
+  // Bulk actions
+  const handleBulkDelete = async () => {
+    const ids = [...selectedIds]
+    try {
+      const result = await bulkDeleteMutation.mutateAsync(ids)
+      toast.success(result.message)
+      setSelectedIds(new Set())
+      setBulkDeleteOpen(false)
+    } catch {
+      toast.error('Failed to delete applications')
+    }
+  }
+
+  const handleBulkArchive = async (archive) => {
+    const ids = [...selectedIds]
+    try {
+      const result = await bulkArchiveMutation.mutateAsync({ ids, archive })
+      toast.success(result.message)
+      setSelectedIds(new Set())
+    } catch {
+      toast.error(`Failed to ${archive ? 'archive' : 'restore'} applications`)
+    }
+  }
+
+  const SelectIcon = allSelected ? CheckSquare : someSelected ? MinusSquare : Square
 
   return (
     <div>
@@ -146,6 +202,37 @@ export default function ApplicationsPage() {
         </div>
       </div>
 
+      {/* Bulk action bar */}
+      {selectionCount > 0 && (
+        <div className="mb-4 flex items-center gap-3 rounded-lg border border-brand-200 bg-brand-50 px-4 py-2.5">
+          <span className="text-sm font-medium text-brand-700">{selectionCount} selected</span>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => handleBulkArchive(!filters.show_archived)}
+              disabled={bulkArchiveMutation.isPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm ring-1 ring-slate-200 transition-colors hover:bg-slate-50"
+            >
+              {filters.show_archived ? <ArchiveRestore className="h-3.5 w-3.5" /> : <Archive className="h-3.5 w-3.5" />}
+              {filters.show_archived ? 'Restore' : 'Archive'}
+            </button>
+            <button
+              onClick={() => setBulkDeleteOpen(true)}
+              disabled={bulkDeleteMutation.isPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-red-600"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete
+            </button>
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="ml-1 rounded-md px-2 py-1.5 text-xs text-slate-500 hover:bg-white hover:text-slate-700"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       {isLoading ? (
         <div className="flex h-40 items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-brand-500" />
@@ -157,6 +244,11 @@ export default function ApplicationsPage() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50/50">
+                <th className="w-10 px-3 py-3">
+                  <button onClick={toggleSelectAll} className="flex items-center justify-center text-slate-400 hover:text-brand-500 transition-colors">
+                    <SelectIcon className="h-4.5 w-4.5" />
+                  </button>
+                </th>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Candidate</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Job Offer</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">AI Status</th>
@@ -166,37 +258,45 @@ export default function ApplicationsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {applications.map((app) => (
-                <tr key={app.application_id} className="group transition-colors hover:bg-slate-50/50">
-                  <td className="px-4 py-3">
-                    <div>
-                      <p className="text-sm font-medium text-slate-900">{app.candidate.full_name}</p>
-                      <p className="text-xs text-slate-500">{app.candidate.email}</p>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <p className="text-sm text-slate-700">{truncate(app.job_offer.title, 30)}</p>
-                  </td>
-                  <td className="px-4 py-3"><StatusBadge status={app.ai_status} /></td>
-                  <td className="px-4 py-3"><StatusBadge status={app.hr_status} /></td>
-                  <td className="px-4 py-3">
-                    <p className="text-sm text-slate-500">{formatDate(app.submitted_at)}</p>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      <button onClick={() => navigate(`/admin/applications/${app.application_id}`)} className="btn-icon" title="View details">
-                        <Eye className="h-4 w-4" />
+              {applications.map((app) => {
+                const isSelected = selectedIds.has(app.application_id)
+                return (
+                  <tr key={app.application_id} className={`transition-colors ${isSelected ? 'bg-brand-50/50' : 'hover:bg-slate-50/50'}`}>
+                    <td className="w-10 px-3 py-3">
+                      <button onClick={() => toggleSelect(app.application_id)} className={`flex items-center justify-center transition-colors ${isSelected ? 'text-brand-500' : 'text-slate-300 hover:text-slate-500'}`}>
+                        {isSelected ? <CheckSquare className="h-4.5 w-4.5" /> : <Square className="h-4.5 w-4.5" />}
                       </button>
-                      <button onClick={() => handleArchive(app.application_id, app.is_archived)} className="btn-icon" title={app.is_archived ? 'Restore' : 'Archive'}>
-                        {app.is_archived ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
-                      </button>
-                      <button onClick={() => setDeleteId(app.application_id)} className="btn-icon text-red-500 hover:bg-red-50 hover:text-red-700" title="Delete">
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div>
+                        <p className="text-sm font-medium text-slate-900">{app.candidate.full_name}</p>
+                        <p className="text-xs text-slate-500">{app.candidate.email}</p>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm text-slate-700">{truncate(app.job_offer.title, 30)}</p>
+                    </td>
+                    <td className="px-4 py-3"><StatusBadge status={app.ai_status} /></td>
+                    <td className="px-4 py-3"><StatusBadge status={app.hr_status} /></td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm text-slate-500">{formatDate(app.submitted_at)}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => navigate(`/admin/applications/${app.application_id}`)} className="btn-icon" title="View details">
+                          <Eye className="h-4 w-4" />
+                        </button>
+                        <button onClick={() => handleArchive(app.application_id, app.is_archived)} className="btn-icon" title={app.is_archived ? 'Restore' : 'Archive'}>
+                          {app.is_archived ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
+                        </button>
+                        <button onClick={() => setDeleteId(app.application_id)} className="btn-icon text-red-500 hover:bg-red-50 hover:text-red-700" title="Delete">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -210,6 +310,15 @@ export default function ApplicationsPage() {
         description="This will permanently delete the application. This action cannot be undone."
         confirmLabel="Delete"
         loading={deleteMutation.isPending}
+      />
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onClose={() => setBulkDeleteOpen(false)}
+        onConfirm={handleBulkDelete}
+        title={`Delete ${selectionCount} Application${selectionCount !== 1 ? 's' : ''}`}
+        description={`This will permanently delete ${selectionCount} application${selectionCount !== 1 ? 's' : ''}. This action cannot be undone.`}
+        confirmLabel={`Delete ${selectionCount}`}
+        loading={bulkDeleteMutation.isPending}
       />
     </div>
   )

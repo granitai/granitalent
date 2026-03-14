@@ -500,49 +500,73 @@ Respond only with what you would say, without any prefix."""
 # TRANSCRIPT ANNOTATION PROMPT
 # =============================================================================
 
-LANGUAGE_TRANSCRIPT_ANNOTATION_PROMPT = """You are an expert Language Proficiency Assessor.
-Your task is to review the following interview transcript and provide feedback ON THE CANDIDATE'S LANGUAGE AND GRAMMAR for each of their answers.
+LANGUAGE_TRANSCRIPT_ANNOTATION_PROMPT = """You are an expert Interview Transcript Assessor specializing in both language quality and answer relevance.
+Your task is to review the following interview transcript and provide DETAILED, ACCURATE feedback on the candidate's answers.
 
-CRITICAL INSTRUCTIONS:
-1. You MUST output your response as a valid JSON dictionary. Do NOT include any markdown formatting like ``json or `` around the output.
-2. The keys of the dictionary must be the integer index (as a string) of the candidate's messages in the transcript.
-3. The values must be your feedback on their language/grammar for that specific message.
-4. Focus your feedback on:
-   - Correcting grammar, verb tenses, and vocabulary mistakes.
-   - Highlighting good use of advanced vocabulary or complex sentence structures.
-   - Being concise but specific. e.g., "Good use of the past tense. However, you should say 'I went to' instead of 'I go to' in this context."
-5. ONLY provide feedback for the candidate's messages (marked as "Candidate:").
-6. If a message is too short or has no notable errors/strengths, you can provide a very brief comment like "Clear and correct." or omit it.
+CRITICAL OUTPUT FORMAT:
+1. Output ONLY a valid JSON dictionary — no markdown, no code fences, no explanation outside the JSON.
+2. Keys = the integer index (as string) of the candidate's messages in the transcript.
+3. Values = your structured feedback string for that message.
 
-Example JSON Output format:
+ANALYSIS FRAMEWORK — For each candidate message, evaluate:
+A. RELEVANCE: Does the answer actually address the interviewer's question? Is it complete or evasive?
+B. GRAMMAR: Verb tenses, conjugation, subject-verb agreement, articles, prepositions, word order, plurals.
+C. VOCABULARY: Appropriateness, range, precision. Note any misused words or impressive choices.
+D. FLUENCY MARKERS: Excessive fillers ("euh", "um", "like"), false starts, incomplete sentences.
+   NOTE: Occasional fillers are normal in spoken interviews — only flag if excessive or disruptive.
+E. COHERENCE: Is the answer well-structured? Does it flow logically?
+
+IMPORTANT: Always consider the QUESTION that was asked when evaluating the answer. Look at the preceding
+interviewer message to understand what was expected, then assess whether the candidate's response is relevant,
+complete, and well-articulated.
+
+FEEDBACK RULES:
+- Be SPECIFIC: Always quote the exact words/phrase that contain the error, then provide the correction.
+- Format errors as: "[Error] 'candidate said X' → should be 'Y' (reason)."
+- Format strengths as: "[Good] Correct use of X / Strong vocabulary with 'word'."
+- Format relevance issues as: "[Relevance] The question asked about X, but the candidate spoke about Y."
+- Format good answers as: "[Content] Clear, complete answer that addresses the question well."
+- If the candidate answers in a DIFFERENT LANGUAGE than the interviewer's question, note this: "[Language] Responded in X instead of expected Y."
+- If a message has NO notable issues: "Clear, relevant, and grammatically correct."
+- Do NOT comment on audio quality, hesitations, or pronunciation (this is a text transcript).
+
+Example JSON Output:
 {
-  "1": "You used the present perfect correctly here. Good vocabulary choice with 'synergy'.",
-  "3": "Grammar error: You said 'I have went', but it should be 'I have gone'. Otherwise, the sentence structure was good.",
-  "5": "Clear and correct."
+  "1": "[Content] Directly addresses the question. [Good] Correct use of past tense throughout. [Error] 'I have went to the company' → 'I have gone to the company' (past participle).",
+  "3": "[Relevance] The question asked about teamwork experience, but the answer focused on individual achievements. [Error] 'She don't like' → 'She doesn't like' (3rd person singular).",
+  "5": "Clear, relevant, and grammatically correct.",
+  "7": "[Language] Responded in English but the interview is in French. [Error] 'I working here since 2020' → 'I have been working here since 2020' (present perfect continuous)."
 }
 """
 
 
 def build_transcript_annotation_prompt(
-    conversation_transcript: str
+    conversation_transcript: str,
+    feedback_language: str = None
 ) -> str:
     """
     Build the transcript annotation prompt with the conversation history.
-    
+
     Args:
         conversation_transcript: Full interview transcript with message indices.
-    
+        feedback_language: Language in which to write the feedback (e.g. "French", "English").
+
     Returns:
         Complete annotation prompt
     """
     prompt_parts = [LANGUAGE_TRANSCRIPT_ANNOTATION_PROMPT]
-    
+
+    if feedback_language:
+        prompt_parts.append(f"\nIMPORTANT: You MUST write ALL your feedback, remarks, and annotations in {feedback_language}. "
+                            f"The tags like [Error], [Good], [Relevance], [Content], [Language] should stay in English, "
+                            f"but the explanations and corrections must be written in {feedback_language}.")
+
     prompt_parts.append(f"\n\n{'='*60}")
     prompt_parts.append("INTERVIEW TRANSCRIPT")
     prompt_parts.append(f"{'='*60}")
     prompt_parts.append(conversation_transcript)
     prompt_parts.append(f"{'='*60}")
-    
+
     prompt_parts.append("\n\nProvide the JSON dictionary containing language feedback for the candidate's messages now:")
-    
+
     return "\n".join(prompt_parts)

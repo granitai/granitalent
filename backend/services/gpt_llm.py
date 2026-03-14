@@ -5,7 +5,7 @@ import logging
 from openai import OpenAI
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
-from backend.config import LLM_PROVIDERS, DEFAULT_LLM_PROVIDER, INTERVIEWER_SYSTEM_PROMPT, build_interviewer_system_prompt
+from backend.config import LLM_PROVIDERS, DEFAULT_LLM_PROVIDER, INTERVIEWER_SYSTEM_PROMPT, build_interviewer_system_prompt, LLM_TEMPERATURE, LLM_MAX_OUTPUT_TOKENS, LLM_FREQUENCY_PENALTY
 
 # Load environment variables
 load_dotenv()
@@ -163,10 +163,10 @@ def generate_response(
         response = client.chat.completions.create(
             model=normalized_model,
             messages=messages,
-            temperature=0.7,
-            max_tokens=300,
-            frequency_penalty=0.4,  # Reduce repetition / looping
-            presence_penalty=0.4  # Encourage new topics
+            temperature=LLM_TEMPERATURE,
+            max_tokens=LLM_MAX_OUTPUT_TOKENS,
+            frequency_penalty=LLM_FREQUENCY_PENALTY,
+            presence_penalty=LLM_FREQUENCY_PENALTY
         )
         
         # Extract response text
@@ -230,7 +230,7 @@ def generate_audio_check_message(model_id: Optional[str] = None, language: Optio
         response = client.chat.completions.create(
             model=normalized_model,
             messages=messages,
-            temperature=0.7,
+            temperature=LLM_TEMPERATURE,
             max_tokens=50
         )
         return clean_response(response.choices[0].message.content)
@@ -283,7 +283,7 @@ def generate_name_request_message(model_id: Optional[str] = None, language: Opti
         response = client.chat.completions.create(
             model=normalized_model,
             messages=messages,
-            temperature=0.7,
+            temperature=LLM_TEMPERATURE,
             max_tokens=80
         )
         return clean_response(response.choices[0].message.content)
@@ -381,7 +381,7 @@ Respond in {interview_start_language if interview_start_language else 'English'}
         response = client.chat.completions.create(
             model=normalized_model,
             messages=messages,
-            temperature=0.7,
+            temperature=LLM_TEMPERATURE,
             max_tokens=200
         )
         
@@ -571,7 +571,9 @@ At the end, provide:
 - **Overall Score** (0-10) - Calculate the mean of all axis scores
 - **Score Calculation** - Show how the overall score was calculated (mean of all axis scores)
 
-REMEMBER: Every claim you make must be supported by actual text from the transcript above. If something wasn't discussed, don't pretend it was. If the candidate didn't answer questions, reflect that honestly in your assessment."""
+REMEMBER: Every claim you make must be supported by actual text from the transcript above. If something wasn't discussed, don't pretend it was. If the candidate didn't answer questions, reflect that honestly in your assessment.
+
+EVIDENCE RULE: For EVERY score you assign, you MUST cite at least one specific quote from the transcript that justifies the score. If the candidate did not address a topic at all, score it 0 and state "Not addressed in interview." Do not infer or assume competence — only evaluate what was explicitly said."""
     
     messages = [
         {
@@ -594,7 +596,7 @@ REMEMBER: Every claim you make must be supported by actual text from the transcr
         response = client.chat.completions.create(
             model=normalized_model,
             messages=messages,
-            temperature=0.7,
+            temperature=LLM_TEMPERATURE,
             max_tokens=2000
         )
         

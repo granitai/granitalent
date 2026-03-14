@@ -4,7 +4,7 @@ import time
 import socket
 from typing import Optional
 from elevenlabs import ElevenLabs
-from backend.config import ELEVENLABS_API_KEY, TTS_PROVIDERS, DEFAULT_TTS_PROVIDER, DEFAULT_VOICE_ID
+from backend.config import ELEVENLABS_API_KEY, TTS_PROVIDERS, DEFAULT_TTS_PROVIDER, DEFAULT_VOICE_ID, TTS_MAX_RETRIES, TTS_RETRY_DELAY, TTS_OUTPUT_FORMAT
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -31,9 +31,9 @@ def get_client():
 # Get default model
 DEFAULT_TTS_MODEL = TTS_PROVIDERS[DEFAULT_TTS_PROVIDER]["default_model"]
 
-# Retry configuration
-MAX_RETRIES = 3
-RETRY_DELAY = 1.0  # seconds
+# Retry configuration (from env vars via config)
+MAX_RETRIES = TTS_MAX_RETRIES
+RETRY_DELAY = TTS_RETRY_DELAY
 
 
 def text_to_speech(
@@ -75,7 +75,7 @@ def text_to_speech(
                 voice_id=voice_id,
                 text=text,
                 model_id=model_id,
-                output_format="mp3_22050_32"
+                output_format=TTS_OUTPUT_FORMAT
             )
             
             # Collect all audio chunks into bytes
