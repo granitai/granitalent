@@ -59,7 +59,23 @@
       "Bash(cd C:/Users/Otmane/Desktop/Workspace/Projets/granitalent/frontend && npx vite build --logLevel error 2>&1 | tail -5)",
       "Bash(cd C:/Users/Otmane/Desktop/Workspace/Projets/granitalent && python -c \"import py_compile; py_compile.compile\\('backend/main.py', doraise=True\\); print\\('backend OK'\\)\")",
       "Bash(cd C:/Users/Otmane/Desktop/Workspace/Projets/granitalent && python -c \"import py_compile; py_compile.compile\\('backend/main.py', doraise=True\\); py_compile.compile\\('backend/services/gemini_live.py', doraise=True\\); print\\('All backend OK'\\)\")",
-      "Bash(cd \"C:/Users/Otmane/Desktop/Workspace/Projets/granitalent\" && python -c \"import py_compile; py_compile.compile\\('backend/main.py', doraise=True\\); py_compile.compile\\('backend/services/gemini_live.py', doraise=True\\); print\\('OK'\\)\")"
+      "Bash(cd \"C:/Users/Otmane/Desktop/Workspace/Projets/granitalent\" && python -c \"import py_compile; py_compile.compile\\('backend/main.py', doraise=True\\); py_compile.compile\\('backend/services/gemini_live.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''backend/main.py'', doraise=True\\); py_compile.compile\\(''backend/services/gemini_live.py'', doraise=True\\); py_compile.compile\\(''backend/services/elevenlabs_stt.py'', doraise=True\\); print\\(''OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''backend/main.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "WebFetch(domain:platform.openai.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:openai.com)",
+      "WebFetch(domain:cookbook.openai.com)",
+      "WebFetch(domain:community.openai.com)",
+      "WebFetch(domain:developers.openai.com)",
+      "WebFetch(domain:devblogs.microsoft.com)",
+      "WebFetch(domain:simonwillison.net)",
+      "Bash(grep -n \"case ''live_\" /c/Users/Otmane/Desktop/Workspace/Projets/granitalent/frontend/src/components/InterviewInterface.jsx)",
+      "Bash(grep -n \"type: ''live_\\\\|msg_type == \"\"live_\\\\|message.type == \"\"live_\" /c/Users/Otmane/Desktop/Workspace/Projets/granitalent/backend/main.py)",
+      "WebFetch(domain:blog.openai.com)",
+      "Bash(xargs grep:*)",
+      "WebFetch(domain:www.reddit.com)",
+      "WebFetch(domain:help.openai.com)"
     ]
   }
 }

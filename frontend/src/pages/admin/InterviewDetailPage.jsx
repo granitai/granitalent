@@ -7,6 +7,7 @@ import { formatDateTime, parseJSON } from '../../lib/utils'
 import { cn } from '../../lib/utils'
 import { toast } from 'sonner'
 import { ArrowLeft, FileText, MessageSquare, Volume2, Loader2, Bot, User, AlertTriangle, Play, Pause, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react'
+import AssessmentView from '../../components/admin/AssessmentView'
 
 export default function InterviewDetailPage() {
   const { id } = useParams()
@@ -232,9 +233,10 @@ export default function InterviewDetailPage() {
                       Regenerate
                     </button>
                   </div>
-                  <div className="prose prose-sm max-w-none">
-                    <pre className="whitespace-pre-wrap font-sans text-sm text-slate-700">{interview.assessment}</pre>
-                  </div>
+                  <AssessmentView
+                    assessment={interview.assessment}
+                    evaluationScores={interview.evaluation_scores}
+                  />
                 </div>
               )
             }

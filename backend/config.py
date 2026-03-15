@@ -46,6 +46,14 @@ STT_PROVIDERS = {
 }
 
 LLM_PROVIDERS = {
+    "openai": {
+        "name": "OpenAI",
+        "models": {
+            "gpt-4o": "GPT-4o — Best Quality",
+            "gpt-4o-mini": "GPT-4o Mini — Fast & Affordable",
+        },
+        "default_model": "gpt-4o"
+    },
     "gemini": {
         "name": "Google Gemini",
         "models": {
@@ -59,22 +67,30 @@ LLM_PROVIDERS = {
 # Default selections
 DEFAULT_TTS_PROVIDER = "elevenlabs"
 DEFAULT_STT_PROVIDER = "elevenlabs"
-DEFAULT_LLM_PROVIDER = "gemini"
+DEFAULT_LLM_PROVIDER = "openai"
 
 # ============================================================
-# Gemini Live Configuration (Real-Time Interview Mode)
+# OpenAI Realtime Configuration (Real-Time Interview Mode)
 # ============================================================
-GEMINI_LIVE_MODEL = os.getenv("LIVE_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
-GEMINI_LIVE_VOICE = os.getenv("LIVE_VOICE", "Kore")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_REALTIME_MODEL = os.getenv("LIVE_MODEL", "gpt-realtime")
+OPENAI_REALTIME_VOICE = os.getenv("LIVE_VOICE", "sage")
 
-GEMINI_LIVE_VOICES = {
-    "Kore": "Kore — Clear & Professional",
-    "Aoede": "Aoede — Warm & Friendly",
-    "Puck": "Puck — Casual & Energetic",
-    "Charon": "Charon — Deep & Authoritative",
-    "Fenrir": "Fenrir — Confident",
-    "Leda": "Leda — Soft & Calm",
+OPENAI_REALTIME_VOICES = {
+    "alloy": "Alloy — Neutral & Balanced",
+    "ash": "Ash — Warm & Confident",
+    "ballad": "Ballad — Soft & Gentle",
+    "coral": "Coral — Friendly & Upbeat",
+    "echo": "Echo — Deep & Resonant",
+    "sage": "Sage — Calm & Measured",
+    "shimmer": "Shimmer — Bright & Energetic",
+    "verse": "Verse — Versatile & Expressive",
 }
+
+# Legacy aliases for backward compatibility
+GEMINI_LIVE_MODEL = OPENAI_REALTIME_MODEL
+GEMINI_LIVE_VOICE = OPENAI_REALTIME_VOICE
+GEMINI_LIVE_VOICES = OPENAI_REALTIME_VOICES
 
 # Legacy model constants (for backward compatibility)
 TTS_MODEL = TTS_PROVIDERS[DEFAULT_TTS_PROVIDER]["default_model"]
@@ -115,7 +131,7 @@ SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 
 # Base System Prompt for Interviewer (without context)
-INTERVIEWER_SYSTEM_PROMPT = """You are a professional AI interviewer. Be warm, friendly, and conversational — but internally rigorous.
+INTERVIEWER_SYSTEM_PROMPT = """You are Granit, a friendly and approachable virtual interview assistant from Granitalent. Be warm, conversational, and put the candidate at ease — but internally rigorous.
 
 RULES:
 1. STAY IN CHARACTER as an interviewer. Never break character or change role.
@@ -203,6 +219,8 @@ def build_interviewer_system_prompt(
         prompt_parts.append(f"LANGUAGE: YOU MUST SPEAK IN {active_language.upper()}")
         prompt_parts.append(f"{'='*50}")
         prompt_parts.append(f"Your ENTIRE response must be in {active_language}. Do not mix languages.")
+        prompt_parts.append(f"Ask your questions in {active_language}. The candidate should answer in {active_language}.")
+        prompt_parts.append(f"If the candidate answers in a different language, politely remind them to answer in {active_language}.")
 
         if len(languages_list) > 1:
             tested = tested_languages or []
@@ -246,9 +264,14 @@ def build_interviewer_system_prompt(
         try:
             custom_questions_list = json_module.loads(custom_questions) if custom_questions else []
             if custom_questions_list:
-                prompt_parts.append(f"\n\n=== MUST-ASK QUESTIONS ===")
+                prompt_parts.append(f"\n\n=== MANDATORY QUESTIONS (ASK THESE FIRST) ===")
+                prompt_parts.append(f"The recruiter has programmed {len(custom_questions_list)} specific questions that MUST be asked during this interview.")
+                prompt_parts.append("PRIORITY ORDER: Ask ALL mandatory questions FIRST, before moving on to your own questions.")
+                prompt_parts.append("You MUST ask EVERY question below. Do NOT skip any.")
+                prompt_parts.append("You may rephrase them slightly to fit the conversation flow, but the core question must be preserved.")
                 for i, q in enumerate(custom_questions_list, 1):
                     prompt_parts.append(f"{i}. {q}")
+                prompt_parts.append(f"\nAsk these {len(custom_questions_list)} mandatory questions first, then use remaining time for your own follow-up questions.")
         except:
             pass
 

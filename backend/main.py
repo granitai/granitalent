@@ -89,12 +89,12 @@ from datetime import timedelta
 from backend.services.elevenlabs_tts import text_to_speech as elevenlabs_tts
 from backend.services.elevenlabs_stt import speech_to_text as elevenlabs_stt
 from backend.services.elevenlabs_stt_streaming import ElevenLabsSTTStreaming
-from backend.services.language_llm_gemini import (
-    generate_response as gemini_generate_response,
-    generate_opening_greeting as gemini_generate_opening_greeting,
-    generate_assessment as gemini_generate_assessment,
-    generate_audio_check_message as gemini_generate_audio_check,
-    generate_name_request_message as gemini_generate_name_request
+from backend.services.language_llm_openai import (
+    generate_response as llm_generate_response,
+    generate_opening_greeting as llm_generate_opening_greeting,
+    generate_assessment as llm_generate_assessment,
+    generate_audio_check_message as llm_generate_audio_check,
+    generate_name_request_message as llm_generate_name_request
 )
 
 app = FastAPI(title="AI Interviewer API")
@@ -209,108 +209,102 @@ def cleanup_dedup_cache(conversation_id: str):
 
 
 def extract_detailed_scores(assessment_text: str) -> dict:
+    """Extract detailed scores from assessment text.
+
+    Handles both new structured JSON assessments and legacy plain-text assessments.
+    Returns: Dictionary with scores and overall score.
     """
-    Extract detailed scores from assessment text.
-    Parses scores for each evaluation axis and linguistic capacity.
-    Returns: Dictionary with scores and overall score
-    """
+    # Try parsing as structured JSON first (new format)
+    try:
+        parsed = json.loads(assessment_text)
+        if isinstance(parsed, dict) and "scores" in parsed:
+            scores_data = parsed["scores"]
+            result = {
+                "technical_skills": scores_data.get("technical_skills", {}).get("score"),
+                "job_fit": scores_data.get("job_fit", {}).get("score"),
+                "communication": scores_data.get("communication", {}).get("score"),
+                "problem_solving": scores_data.get("problem_solving", {}).get("score"),
+                "cv_consistency": scores_data.get("cv_consistency", {}).get("score"),
+                "linguistic_capacity": {},
+                "overall_score": parsed.get("overall_score"),
+            }
+            for lp in parsed.get("language_proficiency", []):
+                if isinstance(lp, dict) and "language" in lp and "score" in lp:
+                    result["linguistic_capacity"][lp["language"]] = lp["score"]
+            return result
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        pass
+
+    # Fallback: regex extraction from plain-text assessment (legacy)
     scores = {
-        "technical_skills": None,
-        "job_fit": None,
-        "communication": None,
-        "problem_solving": None,
-        "cv_consistency": None,
-        "linguistic_capacity": {},
-        "overall_score": None
+        "technical_skills": None, "job_fit": None, "communication": None,
+        "problem_solving": None, "cv_consistency": None,
+        "linguistic_capacity": {}, "overall_score": None,
     }
-    
-    # Try to extract scores using regex patterns
     patterns = {
         "technical_skills": r"(?:technical\s+skills?|technical)\s*[:\-]?\s*(\d+(?:\.\d+)?)/10",
         "job_fit": r"(?:job\s+fit|fit)\s*[:\-]?\s*(\d+(?:\.\d+)?)/10",
         "communication": r"(?:communication\s+skills?|communication)\s*[:\-]?\s*(\d+(?:\.\d+)?)/10",
         "problem_solving": r"(?:problem[-\s]?solving|problem\s+solving)\s*[:\-]?\s*(\d+(?:\.\d+)?)/10",
         "cv_consistency": r"(?:cv\s+consistency|cv\s+vs|cv)\s*[:\-]?\s*(\d+(?:\.\d+)?)/10",
-        "overall_score": r"(?:overall\s+score|overall|mean)\s*[:\-]?\s*(\d+(?:\.\d+)?)/10"
+        "overall_score": r"(?:overall\s+score|overall|mean)\s*[:\-]?\s*(\d+(?:\.\d+)?)/10",
     }
-    
     assessment_lower = assessment_text.lower()
-    
     for key, pattern in patterns.items():
         match = re.search(pattern, assessment_lower, re.IGNORECASE)
         if match:
             try:
                 scores[key] = float(match.group(1))
-            except:
+            except Exception:
                 pass
-    
-    # Extract linguistic capacity scores
-    # Look for language-specific scores
     language_pattern = r"(\w+)\s*(?:language|proficiency|fluency)\s*[:\-]?\s*(\d+(?:\.\d+)?)/10"
-    language_matches = re.finditer(language_pattern, assessment_lower, re.IGNORECASE)
-    for match in language_matches:
+    for match in re.finditer(language_pattern, assessment_lower, re.IGNORECASE):
         language = match.group(1).capitalize()
         try:
-            score = float(match.group(2))
-            scores["linguistic_capacity"][language] = score
-        except:
+            scores["linguistic_capacity"][language] = float(match.group(2))
+        except Exception:
             pass
-    
-    # Calculate overall score if not found but other scores are available
     if scores["overall_score"] is None:
-        axis_scores = [
-            scores["technical_skills"],
-            scores["job_fit"],
-            scores["communication"],
-            scores["problem_solving"],
-            scores["cv_consistency"]
-        ]
-        valid_scores = [s for s in axis_scores if s is not None]
-        if valid_scores:
-            scores["overall_score"] = sum(valid_scores) / len(valid_scores)
-    
+        valid = [v for v in [scores["technical_skills"], scores["job_fit"], scores["communication"], scores["problem_solving"], scores["cv_consistency"]] if v is not None]
+        if valid:
+            scores["overall_score"] = sum(valid) / len(valid)
     return scores
 
 
 def extract_recommendation(assessment_text: str) -> Optional[str]:
+    """Extract recommendation from assessment text.
+
+    Handles both new structured JSON and legacy plain-text formats.
+    Returns: 'recommended', 'not_recommended', or None.
     """
-    Extract recommendation from assessment text.
-    Looks for keywords like 'recommend', 'not recommend', etc.
-    Returns: 'recommended', 'not_recommended', or None
-    """
+    # Try JSON format first
+    try:
+        parsed = json.loads(assessment_text)
+        if isinstance(parsed, dict) and "recommendation" in parsed:
+            rec = parsed["recommendation"]
+            if rec in ("recommended", "not_recommended", "maybe"):
+                return rec if rec != "maybe" else None
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Fallback: keyword matching (legacy)
     assessment_lower = assessment_text.lower()
-    
-    # Look for positive recommendation indicators
-    positive_indicators = [
-        "recommend", "recommended", "strong candidate", "good fit",
-        "would hire", "suitable", "qualified", "excellent candidate"
-    ]
-    
-    # Look for negative recommendation indicators
-    negative_indicators = [
-        "not recommend", "not recommended", "do not recommend",
-        "would not hire", "not suitable", "not qualified", "poor fit",
-        "lack of", "insufficient", "concerns"
-    ]
-    
-    # Count positive vs negative indicators
-    positive_count = sum(1 for indicator in positive_indicators if indicator in assessment_lower)
-    negative_count = sum(1 for indicator in negative_indicators if indicator in assessment_lower)
-    
-    # Check for explicit "Hiring Recommendation" section
+    positive_indicators = ["recommend", "recommended", "strong candidate", "good fit", "would hire", "suitable", "qualified"]
+    negative_indicators = ["not recommend", "not recommended", "do not recommend", "would not hire", "not suitable", "not qualified", "poor fit"]
+
     if "hiring recommendation" in assessment_lower:
         rec_section = assessment_lower.split("hiring recommendation")[-1][:500]
         if any(neg in rec_section for neg in ["not recommend", "do not recommend", "would not"]):
             return "not_recommended"
         elif any(pos in rec_section for pos in ["recommend", "would hire", "suitable"]):
             return "recommended"
-    
-    # Decision based on counts
+
+    positive_count = sum(1 for i in positive_indicators if i in assessment_lower)
+    negative_count = sum(1 for i in negative_indicators if i in assessment_lower)
     if negative_count > positive_count and negative_count > 0:
         return "not_recommended"
     elif positive_count > negative_count and positive_count > 0:
         return "recommended"
-    
     return None
 
 
@@ -351,14 +345,14 @@ def _retry_on_quota(func, *args, max_retries=3, **kwargs):
     raise RuntimeError("Unreachable")
 
 
-def get_llm_functions(provider: str = "gemini"):
-    """Get the LLM functions (Gemini)."""
+def get_llm_functions(provider: str = "openai"):
+    """Get the LLM functions (OpenAI)."""
     return {
-        "generate_response": gemini_generate_response,
-        "generate_opening_greeting": gemini_generate_opening_greeting,
-        "generate_assessment": gemini_generate_assessment,
-        "generate_audio_check": gemini_generate_audio_check,
-        "generate_name_request": gemini_generate_name_request
+        "generate_response": llm_generate_response,
+        "generate_opening_greeting": llm_generate_opening_greeting,
+        "generate_assessment": llm_generate_assessment,
+        "generate_audio_check": llm_generate_audio_check,
+        "generate_name_request": llm_generate_name_request
     }
 
 
@@ -2097,6 +2091,7 @@ async def get_interview_details(interview_id: str, db: Session = Depends(get_db)
         "status": interview.status,
         "recommendation": interview.recommendation,
         "assessment": interview.assessment,
+        "evaluation_scores": json.loads(interview.evaluation_scores) if interview.evaluation_scores else None,
         "conversation_history": interview.conversation_history,
         "has_recording": interview.recording_audio is not None,
         "has_video": interview.recording_video is not None,
@@ -2137,7 +2132,7 @@ async def regenerate_interview_assessment(interview_id: str, db: Session = Depen
             from backend.database import SessionLocal
             db_bg = SessionLocal()
             try:
-                from backend.services.gemini_llm import generate_assessment as gen_assess
+                from backend.services.openai_llm import generate_assessment as gen_assess
                 assessment = gen_assess(history, interview_context=ctx)
                 recommendation = extract_recommendation(assessment)
                 detailed_scores = extract_detailed_scores(assessment)
@@ -2170,7 +2165,7 @@ async def regenerate_interview_assessment(interview_id: str, db: Session = Depen
                             if app_check and app_check.required_languages:
                                 langs = json.loads(app_check.required_languages)
                                 feedback_lang = langs[0] if langs else None
-                        from backend.services.language_llm_gemini import generate_transcript_annotations as gem_ann
+                        from backend.services.language_llm_openai import generate_transcript_annotations as gem_ann
                         annotations = gem_ann(conversation_history=history, feedback_language=feedback_lang)
                         hist_copy = json.loads(iv.conversation_history)
                         for i, msg in enumerate(hist_copy):
@@ -2914,7 +2909,7 @@ async def submit_async_answer(
 
                         # Generate transcript annotations
                         try:
-                            from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_ann
+                            from backend.services.language_llm_openai import generate_transcript_annotations as gemini_ann
                             annotations = gemini_ann(
                                 conversation_history=_bg_conv_history,
                                 model_id=_bg_llm_model,
@@ -3430,10 +3425,10 @@ async def end_async_interview(
                     # Generate transcript annotations
                     try:
                         if llm_provider == "gpt":
-                            from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_ann
+                            from backend.services.language_llm_openai import generate_transcript_annotations as gemini_ann
                             annotations = gemini_ann(conversation_history=_conv_history, model_id=llm_model, feedback_language=_start_lang)
                         else:
-                            from backend.services.language_llm_gemini import generate_transcript_annotations as gem_ann
+                            from backend.services.language_llm_openai import generate_transcript_annotations as gem_ann
                             annotations = gem_ann(conversation_history=_conv_history, model_id=llm_model, feedback_language=_start_lang)
 
                         for i, msg in enumerate(_conv_history):
@@ -3767,10 +3762,10 @@ async def check_and_handle_time_limit(
                         llm_model_tl = config.get("llm_model", LLM_PROVIDERS[llm_provider_tl]["default_model"])
                         _tl_ann_lang = conv.interview_start_language if conv else None
                         if llm_provider_tl == "gpt" or llm_provider_tl == "openai":
-                            from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                            from backend.services.language_llm_openai import generate_transcript_annotations as gemini_generate_transcript_annotations
                             annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model_tl, feedback_language=_tl_ann_lang)
                         else:
-                            from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                            from backend.services.language_llm_openai import generate_transcript_annotations as gemini_generate_transcript_annotations
                             annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model_tl, feedback_language=_tl_ann_lang)
                         
                         for i, msg in enumerate(history):
@@ -4014,7 +4009,7 @@ async def websocket_endpoint(websocket: WebSocket):
             
             logger.info(f"📋 Interview context set - Job: {job_offer.title if job_offer else 'Unknown'}, CV: {len(candidate_cv_text)} chars")
             
-            # Store session configuration — always Gemini Live for real-time
+            # Store session configuration — always OpenAI Realtime for real-time
             config = {
                 "tts_provider": DEFAULT_TTS_PROVIDER,
                 "tts_model": TTS_PROVIDERS[DEFAULT_TTS_PROVIDER]["default_model"],
@@ -4041,10 +4036,10 @@ async def websocket_endpoint(websocket: WebSocket):
             # ============================================================
             # GEMINI LIVE MODE — native audio-in/audio-out (always used for real-time)
             # ============================================================
-            if True:  # Always use Gemini Live for real-time interviews
-                logger.info("🎙️ GEMINI LIVE MODE — real-time audio conversation")
-                from backend.services.gemini_live import GeminiLiveSession
-                from backend.config import GOOGLE_API_KEY, GEMINI_LIVE_MODEL, GEMINI_LIVE_VOICE, build_interviewer_system_prompt
+            if True:  # Always use OpenAI Realtime for real-time interviews
+                logger.info("🎙️ OPENAI REALTIME MODE — real-time audio conversation")
+                from backend.services.openai_realtime import OpenAIRealtimeSession
+                from backend.config import OPENAI_API_KEY, OPENAI_REALTIME_MODEL, OPENAI_REALTIME_VOICE, build_interviewer_system_prompt
 
                 # Build system prompt with full interview context
                 live_system_prompt = build_interviewer_system_prompt(
@@ -4066,23 +4061,45 @@ async def websocket_endpoint(websocket: WebSocket):
                         _req_langs_list = json.loads(required_languages) if required_languages else []
                     except Exception:
                         _req_langs_list = []
+                # Parse custom questions count for end-interview guard
+                _custom_questions_count = 0
+                if custom_questions:
+                    try:
+                        _cq_list = json.loads(custom_questions) if custom_questions else []
+                        _custom_questions_count = len(_cq_list) if isinstance(_cq_list, list) else 0
+                    except Exception:
+                        pass
+
+                # Add language enforcement at the top (Google best practice for OpenAI Realtime)
+                _enforce_lang = interview_start_language or 'the specified language'
+                if len(_req_langs_list) > 1:
+                    # Multi-language: start in one language, switch later as instructed
+                    live_system_prompt = f"""START BY RESPONDING IN {_enforce_lang.upper()}. YOU MUST RESPOND UNMISTAKABLY IN {_enforce_lang.upper()} UNTIL THE SYSTEM INSTRUCTS YOU TO SWITCH LANGUAGES.
+
+""" + live_system_prompt
+                else:
+                    live_system_prompt = f"""RESPOND IN {_enforce_lang.upper()}. YOU MUST RESPOND UNMISTAKABLY IN {_enforce_lang.upper()}.
+
+""" + live_system_prompt
 
                 # Add live-specific instructions
                 live_system_prompt += f"""
 
 LIVE CONVERSATION RULES:
-- Start by greeting the candidate warmly, then begin the interview.
+- YOUR IDENTITY: You are Granit, a friendly virtual interview assistant from Granitalent. When greeting the candidate, introduce yourself by name: "Hi, I'm Granit, your virtual interview assistant from Granitalent."
+- Start by greeting the candidate warmly in {interview_start_language or 'the specified language'}, introduce yourself as Granit, mention the position they're interviewing for, then ask your first question.
 - Speak naturally and conversationally — this is a real-time voice call.
 - Keep responses SHORT (1-3 sentences). Do not monologue.
-- Wait for the candidate to finish speaking before responding.
-- LANGUAGE: You MUST speak in {interview_start_language or 'the specified language'} unless this is a multi-language interview and it is time to switch.
-- CRITICAL RULE — ALWAYS WAIT FOR ANSWERS: Every time you ask a question, you MUST wait for the candidate to respond before doing ANYTHING else. Never ask a question and then immediately follow up with another question, a language switch, or a farewell. The flow is strictly: ask ONE question → STOP and LISTEN → candidate answers → only THEN decide what to do next.
-- BACKGROUND NOISE: If you hear only silence, clicks, typing, or background noise without actual speech, do NOT treat it as a response. Simply wait patiently. Only proceed when the candidate says actual words. If the audio input seems like noise rather than speech, say something like "I didn't catch that, could you please repeat?" instead of moving on.
-- ENDING THE INTERVIEW: Do NOT end the interview on your own. The system manages timing and language switching. Just keep asking questions and waiting for answers. When the system tells you it is time to end, say a warm goodbye and call end_interview.
+- LANGUAGE: You MUST speak in {interview_start_language or 'the specified language'}. The candidate must answer in the same language. If they answer in a different language, politely ask them to switch to the required language.
+- MOST IMPORTANT RULE — ONE QUESTION, THEN STOP: Each of your turns must contain at most ONE question. After asking a question, you MUST STOP TALKING and wait silently for the candidate to answer. NEVER ask two questions in the same turn. NEVER follow a question with another question, a comment, a language switch, or a farewell. The strict flow is: ask ONE question → STOP → candidate speaks → only THEN respond.
+- BACKGROUND NOISE: If you hear only silence, clicks, typing, or background noise without actual speech, do NOT treat it as a response. Wait patiently. Only proceed when the candidate says actual words. If unclear, say "Could you repeat that?" instead of moving on.
+- MANDATORY QUESTIONS FIRST: If the recruiter has programmed specific questions (listed in MANDATORY QUESTIONS section), you MUST ask ALL of them FIRST before asking any of your own questions. Do NOT skip any. Do NOT mix in your own questions until all mandatory questions have been asked.
+- ENDING THE INTERVIEW: Do NOT end the interview on your own. The system manages timing. Just keep asking questions and waiting for answers. When the system tells you it is time to end, FIRST wait for the candidate to finish answering, THEN say a warm goodbye, THEN call end_interview.
+- CRITICAL — NEVER COMBINE A QUESTION WITH A FAREWELL: If you are about to end the interview, do NOT ask a question and say goodbye in the same turn. Either ask a question and wait for the answer, OR say goodbye. Never both.
 - If the candidate explicitly asks to end the interview, you may say goodbye and call end_interview.
 - You MUST call end_interview after your farewell — this is how the system knows the interview is over.
 - Do NOT wait for the candidate to respond after your farewell — call end_interview right away.
-- NEVER ask the candidate if they have any questions. This is a one-way evaluation interview. Just conclude politely and call end_interview."""
+- NEVER ask the candidate if they have any questions. This is a one-way evaluation interview."""
 
                 # Add multi-language instructions if applicable
                 if len(_req_langs_list) > 1:
@@ -4091,21 +4108,24 @@ LIVE CONVERSATION RULES:
 MULTI-LANGUAGE INTERVIEW — MANDATORY:
 - This interview REQUIRES testing the candidate in ALL of these languages: {', '.join(_req_langs_list)}.
 - Start in {interview_start_language or _req_langs_list[0]}.
-- LANGUAGE SWITCHING: The system will inject a context hint telling you when to switch languages. When you see this hint, incorporate the switch into your NEXT natural response — acknowledge the candidate's answer, then smoothly transition to the new language. Example: respond to their answer briefly, then say (IN THE NEW LANGUAGE) "Let's continue in English" and ask ONE question in the new language.
-- CRITICAL: ALWAYS wait for the candidate to fully answer your current question BEFORE switching. The flow is: ask question → WAIT for answer → hear answer → THEN switch in your response. Never switch without hearing the answer first.
-- Each question must be asked ENTIRELY in ONE language. Never blend two languages in the same turn.
-- When switching, announce the switch IN THE NEW LANGUAGE (not the old one). Your entire response after the switch must be in the new language.
-- DO NOT end the interview or call end_interview until the system tells you to. The system handles interview timing automatically.
-- DO NOT anticipate or prepare for a language switch. Do not mention upcoming switches. Just ask questions naturally in the current language.
-- When speaking a language, speak it natively and fluently — no accent from another language."""
+- LANGUAGE SWITCHING: The system will tell you when to switch. When you receive a switch instruction:
+  1. Your ENTIRE next turn must be in the NEW language ONLY. Zero words in the old language.
+  2. Say a short transition phrase in the new language (e.g., "Continuons en français" or "Let's continue in English").
+  3. Ask ONE question in the new language. Then STOP and WAIT.
+- CRITICAL: When switching, do NOT acknowledge the previous answer in the old language. Just switch cleanly to the new language.
+- CRITICAL: ALWAYS wait for the candidate to fully answer before switching. Flow: ask → WAIT → hear answer → THEN switch.
+- Each turn must be ENTIRELY in ONE language. Never mix two languages in the same response.
+- Ask only ONE question per turn, then STOP and wait for the answer.
+- DO NOT end the interview until the system tells you to.
+- DO NOT anticipate switches or mention upcoming language changes."""
 
-                live_model = GEMINI_LIVE_MODEL
-                live_voice = init_data.get("gemini_live_voice", GEMINI_LIVE_VOICE)
+                live_model = OPENAI_REALTIME_MODEL
+                live_voice = init_data.get("gemini_live_voice", OPENAI_REALTIME_VOICE)
 
                 # Determine language code for transcription
                 live_lang_code = get_language_code(interview_start_language or "") or "en"
-                session = GeminiLiveSession(
-                    api_key=GOOGLE_API_KEY,
+                session = OpenAIRealtimeSession(
+                    api_key=OPENAI_API_KEY,
                     model=live_model,
                     system_prompt=live_system_prompt,
                     voice=live_voice,
@@ -4114,23 +4134,25 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
 
                 ws_lock = asyncio.Lock()
                 output_transcript_buffer = []
-                input_flush_task = None
                 live_concluded = False
                 interview_ending = False  # Set when end_interview is called, live_concluded set after turnComplete
                 interview_ending_timer = [None]  # Fallback timer to force live_concluded
                 user_is_speaking = False
                 ai_is_speaking = False  # True while AI audio is being generated (prevents echo detection)
                 echo_cooldown_until = [0.0]  # timestamp until which echo suppression is active (post-turn playback delay)
-                # Audio capture: collect all candidate PCM chunks for combined recording + per-turn STT
+                # Audio capture: collect all candidate PCM chunks for combined recording + per-turn audio
                 all_input_audio_chunks = []    # full recording (base64 PCM chunks)
-                turn_input_audio_chunks = []   # per-turn buffer for dedicated STT
-                gemini_input_transcript_buffer = []  # Gemini's own input transcription — fallback if ElevenLabs STT fails
+                turn_input_audio_chunks = []   # per-turn buffer for audio recording
                 per_turn_audio_data = []       # list of (turn_index, pcm_bytes) for per-answer audio
                 turn_counter = [0]             # mutable counter for turn numbering
                 # Full interview recording timeline: interleaved candidate (16kHz) + AI (24kHz) audio
                 recording_timeline = []        # list of ("input"|"output", base64_pcm_chunk)
+                # Per-turn transcript accumulator: OpenAI sends complete transcriptions per turn,
+                # but we accumulate in case of multiple speech segments before AI responds
+                current_turn_parts = []        # list of transcript strings
+                finalize_lock = asyncio.Lock() # prevent concurrent finalization
 
-                # Track the current expected language for STT
+                # Track the current expected language
                 current_expected_language = interview_start_language or "French"
                 current_language_code = live_lang_code  # ISO code like "fr", "en"
 
@@ -4139,149 +4161,48 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                 questions_in_current_lang = [0]      # questions in current language
                 switch_sent = [False]                 # whether we already sent a switch command this language
 
-                def _transcribe_pcm_with_elevenlabs(pcm_chunks: list, lang_code: str) -> str:
-                    """Send buffered PCM audio to ElevenLabs Scribe v2 for high-quality transcription."""
-                    import base64, struct, io
-                    try:
-                        # Merge PCM chunks into raw bytes
-                        raw_parts = []
-                        for chunk in pcm_chunks:
-                            try:
-                                raw_parts.append(base64.b64decode(chunk))
-                            except Exception:
-                                pass
-                        if not raw_parts:
-                            return ""
-                        pcm_data = b"".join(raw_parts)
-                        # Need at least 0.3s of audio (16kHz * 2 bytes * 0.3s = 9600 bytes)
-                        if len(pcm_data) < 9600:
-                            return ""
-                        # Build WAV in memory for ElevenLabs API
-                        sr = 16000
-                        wav_buf = io.BytesIO()
-                        wav_buf.write(b"RIFF")
-                        wav_buf.write(struct.pack('<I', 36 + len(pcm_data)))
-                        wav_buf.write(b"WAVE")
-                        wav_buf.write(b"fmt ")
-                        wav_buf.write(struct.pack('<IHHIIHH', 16, 1, 1, sr, sr * 2, 2, 16))
-                        wav_buf.write(b"data")
-                        wav_buf.write(struct.pack('<I', len(pcm_data)))
-                        wav_buf.write(pcm_data)
-                        wav_bytes = wav_buf.getvalue()
-                        # Call ElevenLabs STT with explicit language
-                        from backend.services.elevenlabs_stt import speech_to_text as el_stt
-                        text = el_stt(wav_bytes, audio_format="wav", language_code=lang_code)
-                        return text.strip() if text else ""
-                    except Exception as e:
-                        error_msg = str(e).lower()
-                        if "quota" in error_msg or "429" in error_msg or "account" in error_msg or "limit" in error_msg:
-                            logger.warning(f"⚠️ ElevenLabs STT quota/account error: {e} — Gemini inputTranscription will be used as fallback")
-                        else:
-                            logger.warning(f"ElevenLabs STT failed: {e}")
-                        return ""
+                async def finalize_user_transcript(is_turn_seal: bool = False):
+                    """Seal the current user turn into the conversation.
 
-                async def finalize_user_transcript():
-                    """Transcribe buffered user audio via ElevenLabs STT (explicit language) and add to conversation.
-                    Falls back to Gemini's inputTranscription if ElevenLabs STT fails (e.g. quota exhausted)."""
+                    With OpenAI Realtime, transcription comes directly from the API via
+                    on_live_input_transcription (gpt-4o-transcribe). This function just
+                    combines current_turn_parts into one conversation message and saves
+                    accumulated audio to per_turn_audio_data for recording."""
                     nonlocal user_is_speaking
-                    # Snapshot and clear Gemini transcript buffer regardless of audio chunks
-                    gemini_fallback_text = " ".join(gemini_input_transcript_buffer).strip() if gemini_input_transcript_buffer else ""
-                    gemini_input_transcript_buffer.clear()
-
-                    if not turn_input_audio_chunks:
-                        # No audio chunks but Gemini may have transcribed — use as fallback
+                    async with finalize_lock:
+                        if is_turn_seal and current_turn_parts:
+                            full_text = " ".join(current_turn_parts)
+                            current_turn_parts.clear()
+                            turn_idx = turn_counter[0]
+                            turn_counter[0] += 1
+                            # Combine audio chunks into per-turn recording
+                            has_audio = False
+                            if turn_input_audio_chunks:
+                                import base64 as _b64
+                                raw_parts = []
+                                for chunk in turn_input_audio_chunks:
+                                    try:
+                                        raw_parts.append(_b64.b64decode(chunk))
+                                    except Exception:
+                                        pass
+                                turn_pcm = b"".join(raw_parts) if raw_parts else b""
+                                turn_input_audio_chunks.clear()
+                                if len(turn_pcm) >= 9600:
+                                    per_turn_audio_data.append((turn_idx, turn_pcm))
+                                    has_audio = True
+                            conversation.add_message("candidate", full_text, audio_turn=turn_idx if has_audio else None)
+                            logger.info(f"📝 Sealed user turn: '{full_text[:100]}' (turn {turn_idx})")
+                        elif is_turn_seal:
+                            current_turn_parts.clear()
+                            turn_input_audio_chunks.clear()
                         user_is_speaking = False
-                        if gemini_fallback_text and len(gemini_fallback_text) >= 2:
-                            logger.info(f"📝 No audio chunks but Gemini transcribed: '{gemini_fallback_text[:80]}...'")
-                            cleaned_text = gemini_fallback_text
-                            conversation.add_message("candidate", cleaned_text)
-                            async with ws_lock:
-                                try:
-                                    await websocket.send_json({
-                                        "type": "live_user_transcript",
-                                        "text": cleaned_text,
-                                    })
-                                except Exception:
-                                    pass
-                        return
-                    # Take a snapshot of the chunks and clear the buffer
-                    chunks_to_transcribe = list(turn_input_audio_chunks)
-                    turn_input_audio_chunks.clear()
-                    user_is_speaking = False
-                    if chunks_to_transcribe:
-                        # Build per-turn PCM bytes for later upload
-                        import base64 as _b64
-                        raw_parts = []
-                        for chunk in chunks_to_transcribe:
-                            try:
-                                raw_parts.append(_b64.b64decode(chunk))
-                            except Exception:
-                                pass
-                        turn_pcm = b"".join(raw_parts) if raw_parts else b""
 
-                        # Skip very short audio that's likely noise (less than 0.2s at 16kHz 16-bit mono)
-                        if len(turn_pcm) < 6400:
-                            logger.debug(f"Skipping very short audio chunk ({len(turn_pcm)} bytes) — likely noise")
-                            return
-
-                        # Run ElevenLabs STT in executor (blocking I/O)
-                        cleaned_text = await asyncio.get_event_loop().run_in_executor(
-                            None, _transcribe_pcm_with_elevenlabs, chunks_to_transcribe, current_language_code
-                        )
-
-                        # Fallback to Gemini transcription if ElevenLabs returned nothing
-                        if not cleaned_text or len(cleaned_text.strip()) < 2:
-                            if gemini_fallback_text and len(gemini_fallback_text) >= 2:
-                                logger.warning(f"⚠️ ElevenLabs STT returned empty — falling back to Gemini transcription: '{gemini_fallback_text[:80]}...'")
-                                cleaned_text = gemini_fallback_text
-                            else:
-                                logger.debug(f"Skipping empty/trivial transcription (both ElevenLabs and Gemini empty)")
-                                return
-
-                        # Filter out STT artifacts — ElevenLabs returns these for non-speech audio
-                        _noise_phrases = {
-                            "silence", "(silence)", "[silence]",
-                            "blank audio", "(blank audio)", "[blank audio]",
-                            "no speech", "(no speech)", "[no speech]",
-                            "inaudible", "(inaudible)", "[inaudible]",
-                            "background noise", "(background noise)", "[background noise]",
-                            "bruit de fond", "(bruit de fond)",
-                            "musique", "(musique)", "music", "(music)",
-                        }
-                        if cleaned_text.strip().lower() in _noise_phrases:
-                            logger.debug(f"Skipping STT noise artifact: '{cleaned_text}'")
-                            return
-                        # Save per-turn audio data for later upload
-                        turn_idx = turn_counter[0]
-                        turn_counter[0] += 1
-                        if len(turn_pcm) >= 9600:  # at least 0.3s of audio
-                            per_turn_audio_data.append((turn_idx, turn_pcm))
-                            conversation.add_message("candidate", cleaned_text, audio_turn=turn_idx)
-                        else:
-                            conversation.add_message("candidate", cleaned_text)
-                        # Send finalized user text to frontend
-                        async with ws_lock:
-                            try:
-                                await websocket.send_json({
-                                    "type": "live_user_transcript",
-                                    "text": cleaned_text,
-                                })
-                            except Exception:
-                                pass
-
-
-                async def schedule_input_flush():
-                    """Wait for a pause in user speech, then finalize."""
-                    nonlocal input_flush_task
-                    await asyncio.sleep(2.0)
-                    await finalize_user_transcript()
-                    input_flush_task = None
 
                 async def on_live_audio(pcm_base64: str):
                     nonlocal ai_is_speaking
                     ai_is_speaking = True
                     # Don't play or record AI audio after end_interview was called
-                    # (Gemini may generate a duplicate farewell from the toolResponse ack)
+                    # (AI may generate a duplicate farewell from the function call ack)
                     if interview_ending:
                         return
                     # Capture AI audio for full interview recording
@@ -4302,50 +4223,156 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                     """Transcription of what the AI said."""
                     output_transcript_buffer.append(text)
 
+                def _is_noise_transcription(text: str) -> bool:
+                    """Detect ONLY the most obvious Whisper hallucinations (wrong-script gibberish).
+
+                    IMPORTANT: We intentionally keep ALL real candidate speech — even hesitations,
+                    filler words, repetitions, or errors — because the transcript is used for
+                    HR analysis later. Only filter out things that are clearly NOT speech."""
+                    import unicodedata as _ud
+                    import re as _re_n
+
+                    t = text.strip()
+                    t_lower = t.lower()
+
+                    # 1. Bracket-enclosed descriptors: [silence], (bruit de fond), etc.
+                    #    These are Whisper's own annotations, never real speech.
+                    if _re_n.match(r'^[\[\(].*[\]\)]$', t_lower):
+                        return True
+
+                    # 2. Well-known Whisper subtitle hallucinations (these are NEVER real speech)
+                    _subtitle_hallucinations = {
+                        "sous-titres réalisés para la communauté d'amara.org",
+                        "sous-titrage", "transcrit par", "translated by",
+                        "thanks for watching", "thank you for watching",
+                        "thanks for watching.", "thank you for watching.",
+                        "merci d'avoir regardé",
+                    }
+                    if t_lower in _subtitle_hallucinations:
+                        return True
+
+                    # 3. Wrong-script detection: CJK/Hangul/Thai characters in a Latin-script interview.
+                    #    This is the main Whisper noise hallucination — it "hears" noise and outputs
+                    #    text in completely unrelated scripts.
+                    _expected_scripts = set()
+                    for lang in _req_langs_list or []:
+                        lang_lower = lang.lower()
+                        if lang_lower in ("arabic",):
+                            _expected_scripts.add("ARABIC")
+                        elif lang_lower in ("chinese", "mandarin", "cantonese"):
+                            _expected_scripts.update({"CJK", "HAN"})
+                        elif lang_lower in ("japanese",):
+                            _expected_scripts.update({"CJK", "HAN", "HIRAGANA", "KATAKANA"})
+                        elif lang_lower in ("korean",):
+                            _expected_scripts.update({"HANGUL"})
+                        elif lang_lower in ("thai",):
+                            _expected_scripts.add("THAI")
+                        elif lang_lower in ("hindi",):
+                            _expected_scripts.add("DEVANAGARI")
+                        elif lang_lower in ("russian", "ukrainian"):
+                            _expected_scripts.add("CYRILLIC")
+                        else:
+                            _expected_scripts.add("LATIN")
+                    if not _expected_scripts:
+                        _expected_scripts.add("LATIN")
+
+                    # Count characters by script category
+                    _script_counts = {}
+                    _total_alpha = 0
+                    for ch in t:
+                        if not ch.isalpha():
+                            continue
+                        _total_alpha += 1
+                        try:
+                            name = _ud.name(ch, "")
+                        except ValueError:
+                            name = ""
+                        script = "OTHER"
+                        if "CJK" in name or "HAN" in name:
+                            script = "CJK"
+                        elif "HANGUL" in name:
+                            script = "HANGUL"
+                        elif "HIRAGANA" in name or "KATAKANA" in name:
+                            script = "CJK"
+                        elif "ARABIC" in name:
+                            script = "ARABIC"
+                        elif "CYRILLIC" in name:
+                            script = "CYRILLIC"
+                        elif "THAI" in name:
+                            script = "THAI"
+                        elif "DEVANAGARI" in name:
+                            script = "DEVANAGARI"
+                        elif "LATIN" in name:
+                            script = "LATIN"
+                        _script_counts[script] = _script_counts.get(script, 0) + 1
+
+                    # If >50% of alpha chars are in a completely unexpected script, it's noise
+                    # (higher threshold than before — we want to be very conservative)
+                    if _total_alpha > 3:
+                        for script, count in _script_counts.items():
+                            if script == "OTHER":
+                                continue
+                            if script not in _expected_scripts and count / _total_alpha > 0.5:
+                                logger.info(f"🔇 Noise: unexpected script '{script}' ({count}/{_total_alpha} chars): '{t[:60]}'")
+                                return True
+
+                    return False
+
                 async def on_live_input_transcription(text: str):
-                    """Gemini's transcription of user speech — used as 'user is speaking' signal
-                    AND as fallback transcript if ElevenLabs STT fails (e.g. quota exhausted)."""
-                    nonlocal input_flush_task, user_is_speaking
+                    """OpenAI's transcription of user speech (complete per-turn transcript).
+
+                    OpenAI Realtime sends conversation.item.input_audio_transcription.completed
+                    with a complete transcription after semantic VAD detects end of speech.
+
+                    IMPORTANT: No ai_is_speaking or echo_cooldown check here. OpenAI's
+                    transcription is of the BUFFERED USER INPUT only — it cannot contain echo."""
+                    nonlocal user_is_speaking
                     if not text or not text.strip():
                         return
-                    # Ignore input transcription while AI is speaking (echo from speakers)
-                    if ai_is_speaking:
+
+                    cleaned = text.strip()
+                    if len(cleaned) < 2:
                         return
-                    # Ignore echo from speakers still playing after AI turn completed
-                    import time as _time_mod
-                    if _time_mod.time() < echo_cooldown_until[0]:
+
+                    # Comprehensive noise detection
+                    if _is_noise_transcription(cleaned):
+                        logger.debug(f"Skipping noise transcription: '{cleaned[:60]}'")
                         return
-                    # Accumulate Gemini's transcription as fallback for ElevenLabs STT
-                    gemini_input_transcript_buffer.append(text.strip())
-                    # Notify frontend that user is speaking (only once per speaking turn)
-                    if not user_is_speaking:
-                        user_is_speaking = True
-                        async with ws_lock:
-                            try:
-                                await websocket.send_json({"type": "user_speaking", "speaking": True})
-                            except Exception:
-                                pass
-                    # Reset the debounce timer — when user stops speaking for 2s, finalize via ElevenLabs STT
-                    if input_flush_task:
-                        input_flush_task.cancel()
-                    input_flush_task = asyncio.create_task(schedule_input_flush())
+
+                    current_turn_parts.append(cleaned)
+                    user_is_speaking = False  # User finished speaking (transcription is post-VAD)
+                    logger.info(f"📝 User transcription received: '{cleaned[:80]}' (parts so far: {len(current_turn_parts)})")
+
+                    # Send to frontend
+                    full_so_far = " ".join(current_turn_parts)
+                    async with ws_lock:
+                        try:
+                            await websocket.send_json({
+                                "type": "live_user_transcript",
+                                "text": full_so_far,
+                            })
+                        except Exception:
+                            pass
 
                 async def on_live_interview_end(reason: str):
-                    """Called when Gemini invokes the end_interview function.
+                    """Called when OpenAI invokes the end_interview function.
                     Returns False to reject if not enough questions asked or untested languages remain.
                     Uses two-phase shutdown: sets interview_ending first, then live_concluded
                     only after the next turnComplete processes the last user answer."""
                     nonlocal interview_ending
                     logger.info(f"🔔 end_interview called: reason={reason}, ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()}, q_in_lang={questions_in_current_lang[0]}")
 
-                    # Guard 1: reject premature ending — need at least 4 AI turns
-                    # (unless candidate explicitly requested to end)
-                    if reason != "candidate_requested" and ai_turn_count[0] < 4:
-                        logger.warning(f"🚫 Rejected end_interview: only {ai_turn_count[0]} questions asked (minimum 4)")
+                    # Guard 1: reject premature ending — need enough AI turns
+                    # Minimum is max(4, custom_questions + 2) to ensure all custom questions are asked
+                    _min_turns = max(4, _custom_questions_count + 2)  # +2 for greeting + at least 1 organic question
+                    if reason != "candidate_requested" and ai_turn_count[0] < _min_turns:
+                        _remaining_q = _min_turns - ai_turn_count[0]
+                        logger.warning(f"🚫 Rejected end_interview: only {ai_turn_count[0]} turns (minimum {_min_turns}, custom_q={_custom_questions_count})")
                         return {"reason": (
-                            "REJECTED: The interview has barely started. You have only asked "
-                            f"{ai_turn_count[0]} question(s) — the minimum is 4. "
-                            "Continue asking questions. Do NOT attempt to end the interview again until you have asked more questions."
+                            "REJECTED: The interview is not finished. You have only asked "
+                            f"{ai_turn_count[0]} question(s) — you need at least {_remaining_q} more. "
+                            + (f"You have {_custom_questions_count} mandatory questions from the recruiter that MUST all be asked. " if _custom_questions_count > 0 else "")
+                            + "Continue asking questions. Do NOT attempt to end the interview again until you have asked more questions."
                         )}
 
                     # Guard 2: reject if untested languages remain in multi-language interviews
@@ -4367,7 +4394,7 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                 f"Do NOT end the interview. Do NOT say goodbye. Just switch languages and ask a question."
                             )}
 
-                    logger.info(f"Gemini Live: end_interview accepted (reason: {reason})")
+                    logger.info(f"OpenAI Realtime: end_interview accepted (reason: {reason})")
                     interview_ending = True
                     # DON'T set live_concluded here — wait for turnComplete to finalize last answer
                     # Notify frontend that the AI ended the interview
@@ -4427,26 +4454,26 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                 switch_turn_in_progress = [False]   # True during forced injection response (suppress echo)
 
                 async def _hint_language_switch(target_lang: str):
-                    """Buffer a language switch instruction into Gemini's context WITHOUT forcing a response.
+                    """Buffer a language switch instruction into the conversation context WITHOUT forcing a response.
 
-                    Uses send_context (turnComplete=false) so the instruction is buffered until
-                    the candidate next speaks and VAD completes the turn. Gemini then processes
-                    the candidate's answer + our hint together, producing ONE natural response
-                    that acknowledges the answer AND switches language. No interruption.
+                    Uses send_context so the instruction is buffered until the candidate next speaks
+                    and VAD completes the turn. The model processes the candidate's answer + our hint
+                    together, producing ONE natural response that acknowledges the answer AND switches
+                    language. No interruption.
                     """
                     try:
                         switch_context_injected[0] = True
                         switch_context_target[0] = target_lang
                         await session.send_context(
-                            f"[SYSTEM INSTRUCTION — NOT SPOKEN TO CANDIDATE] "
-                            f"IMPORTANT: After the candidate finishes answering your current question, "
-                            f"you must switch to {target_lang}. "
-                            f"In your NEXT response: briefly acknowledge their answer, then smoothly "
-                            f"transition by announcing IN {target_lang} (not the current language) that "
-                            f"you will continue in {target_lang}. Then ask ONE question in {target_lang}. "
-                            f"CRITICAL: Wait for the candidate's answer first. Do NOT switch immediately. "
-                            f"The announcement and question must BOTH be entirely in {target_lang}. "
-                            f"From now on, speak ONLY in {target_lang} until told otherwise."
+                            f"[SYSTEM — LANGUAGE SWITCH] "
+                            f"After the candidate finishes their current answer, switch entirely to {target_lang}. "
+                            f"Your ENTIRE next response must be in {target_lang} only — do NOT use the current language at all. "
+                            f"Say a brief transition like "
+                            + ("\"Let's continue in English.\" " if target_lang == "English" else
+                               "\"Continuons en français.\" " if target_lang == "French" else
+                               f"a short phrase in {target_lang}. ")
+                            + f"then ask ONE question in {target_lang}. "
+                            f"IMPORTANT: Say only ONE question, then STOP and WAIT for the candidate to answer."
                         )
                         logger.info(f"🔄 Language switch HINT buffered (turnComplete=false): → {target_lang}")
                     except Exception as e:
@@ -4455,25 +4482,26 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                 async def _force_language_switch(target_lang: str):
                     """Force an immediate language switch by sending turnComplete=true.
 
-                    Used as a fallback when the hint approach didn't work (Gemini ignored the hint).
-                    This WILL interrupt the current flow and force Gemini to respond immediately.
+                    Used as a fallback when the hint approach didn't work (model ignored the hint).
+                    This WILL interrupt the current flow and force an immediate response.
                     """
-                    nonlocal user_is_speaking, input_flush_task
+                    nonlocal user_is_speaking
                     try:
                         injected_language_target[0] = target_lang
                         switch_turn_in_progress[0] = True
                         turn_input_audio_chunks.clear()
-                        gemini_input_transcript_buffer.clear()
+                        current_turn_parts.clear()
                         user_is_speaking = False
-                        if input_flush_task:
-                            input_flush_task.cancel()
                         await session.send_text(
-                            f"[SYSTEM INSTRUCTION — NOT SPOKEN TO CANDIDATE] "
-                            f"You must now switch to speaking {target_lang}. "
-                            f"In your VERY NEXT response: briefly announce IN {target_lang} that "
-                            f"you will continue in {target_lang}, then ask ONE question in {target_lang}. "
-                            f"The announcement AND question must be entirely in {target_lang}. "
-                            f"From now on, speak ONLY in {target_lang} until told otherwise."
+                            f"[SYSTEM — IMMEDIATE LANGUAGE SWITCH] "
+                            f"Switch to {target_lang} NOW. "
+                            f"Your ENTIRE response must be in {target_lang} only — zero words in any other language. "
+                            f"Say a brief transition like "
+                            + ("\"Let's continue in English.\" " if target_lang == "English" else
+                               "\"Continuons en français.\" " if target_lang == "French" else
+                               f"a short phrase in {target_lang} ")
+                            + f"then ask ONE question in {target_lang}. "
+                            f"IMPORTANT: Say only ONE question, then STOP and WAIT for the candidate to answer."
                         )
                         logger.info(f"🔄 Language switch FORCED (turnComplete=true): → {target_lang}")
                     except Exception as e:
@@ -4482,45 +4510,44 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                 end_instruction_sent = [False]
 
                 async def _inject_end_instruction():
-                    """Tell Gemini it's time to wrap up the interview."""
+                    """Tell the AI it's time to wrap up — uses send_context so it doesn't
+                    interrupt the current turn. The AI will process this on its next response."""
                     if end_instruction_sent[0] or interview_ending:
                         return
                     end_instruction_sent[0] = True
                     try:
-                        await session.send_text(
-                            "[SYSTEM INSTRUCTION — NOT SPOKEN TO CANDIDATE] "
+                        await session.send_context(
+                            "[SYSTEM INSTRUCTION — TIME TO END] "
                             "You have now asked enough questions in all required languages. "
-                            "It is time to end the interview. "
-                            "In your NEXT response: thank the candidate warmly for their time, "
-                            "say a brief farewell, then call the end_interview function. "
-                            "Do NOT ask any more questions. Just say goodbye and call end_interview."
+                            "AFTER the candidate finishes answering your current question, "
+                            "thank them warmly for their time, say a brief farewell, "
+                            "then call the end_interview function. "
+                            "CRITICAL: Do NOT ask another question. Do NOT combine a question with a farewell. "
+                            "Wait for the candidate's answer first, THEN say goodbye in a separate turn."
                         )
-                        logger.info("📩 End instruction sent to Gemini Live")
+                        logger.info("📩 End instruction buffered (send_context) to OpenAI Realtime")
                     except Exception as e:
                         logger.error(f"Failed to inject end instruction: {e}")
 
                 async def on_live_turn_complete():
-                    nonlocal input_flush_task, current_expected_language, current_language_code, live_concluded, ai_is_speaking, user_is_speaking
+                    nonlocal current_expected_language, current_language_code, live_concluded, ai_is_speaking, user_is_speaking
                     ai_is_speaking = False
                     # Post-turn echo cooldown: speakers may still be playing buffered audio
                     import time as _time_mod
-                    echo_cooldown_until[0] = _time_mod.time() + 1.5
-                    # AI finished speaking — finalize any pending user transcript
-                    # BUT: skip this if the current turn was a switch response, because
-                    # audio accumulated during the switch announcement is echo/noise, not real speech
+                    _cooldown_s = 2.5 if switch_turn_in_progress[0] else 2.0
+                    echo_cooldown_until[0] = _time_mod.time() + _cooldown_s
+                    # AI finished speaking — seal the user's previous turn transcript
+                    # Skip if the current turn was a switch response (audio is echo/noise)
+                    _ai_text_preview = " ".join(output_transcript_buffer).strip()
                     if not switch_turn_in_progress[0]:
-                        if input_flush_task:
-                            input_flush_task.cancel()
-                            input_flush_task = None
-                        await finalize_user_transcript()
+                        # Only seal if AI produced real output (not a micro-turn)
+                        _should_seal = len(_ai_text_preview) >= 5 or interview_ending
+                        await finalize_user_transcript(is_turn_seal=_should_seal)
                     else:
-                        # Discard any audio that accumulated during the switch announcement
+                        # Discard any audio/transcripts that accumulated during the switch announcement
                         turn_input_audio_chunks.clear()
-                        gemini_input_transcript_buffer.clear()
+                        current_turn_parts.clear()
                         user_is_speaking = False
-                        if input_flush_task:
-                            input_flush_task.cancel()
-                            input_flush_task = None
                     # Use output transcription buffer for AI text
                     full_text = " ".join(output_transcript_buffer).strip()
                     output_transcript_buffer.clear()
@@ -4593,30 +4620,31 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                     conversation.add_tested_language(current_expected_language)
 
                             # --- LANGUAGE SWITCH LOGIC ---
-                            # Strategy: At Q3, buffer a hint (turnComplete=false) so Gemini
-                            # incorporates the switch into its NEXT natural response.
-                            # If Gemini ignores the hint by Q5+, force it (turnComplete=true).
+                            # Strategy: At Q3, buffer a hint so the model incorporates the switch
+                            # into its NEXT natural response. If ignored by Q5+, force it.
                             untested = [l for l in _req_langs_list if l not in conversation.get_tested_languages()]
 
                             if untested and not switch_sent[0] and not is_forced_switch_turn:
                                 if questions_in_current_lang[0] >= 3:
                                     # Buffer the switch hint — does NOT force a response
+                                    # Threshold is 3 because turn 1 is the greeting/introduction
                                     next_lang = untested[0]
                                     switch_sent[0] = True
-                                    logger.info(f"🔄 Buffering language switch hint: {current_expected_language} → {next_lang}")
+                                    logger.info(f"🔄 Buffering language switch hint: {current_expected_language} → {next_lang} (after {questions_in_current_lang[0]} questions)")
                                     asyncio.create_task(_hint_language_switch(next_lang))
 
                             elif untested and switch_context_injected[0] and questions_in_current_lang[0] >= 5:
                                 # Hint was ignored for 2+ turns — force the switch
                                 next_lang = switch_context_target[0] or untested[0]
-                                logger.warning(f"⚠️ Hint was ignored ({questions_in_current_lang[0]} questions in {current_expected_language}), forcing switch → {next_lang}")
+                                logger.warning(f"⚠️ Hint was ignored ({questions_in_current_lang[0]} questions in {current_expected_language}, threshold 5), forcing switch → {next_lang}")
                                 switch_context_injected[0] = False
                                 switch_context_target[0] = None
                                 asyncio.create_task(_force_language_switch(next_lang))
 
                             # All languages tested and enough questions — tell AI to wrap up
-                            if not untested and ai_turn_count[0] >= 5 and questions_in_current_lang[0] >= 2 and not interview_ending:
-                                logger.info(f"✅ All languages tested, {ai_turn_count[0]} questions asked — injecting end instruction")
+                            _min_before_end = max(5, _custom_questions_count + 2)
+                            if not untested and ai_turn_count[0] >= _min_before_end and questions_in_current_lang[0] >= 2 and not interview_ending:
+                                logger.info(f"✅ All languages tested, {ai_turn_count[0]} questions asked (min {_min_before_end}) — injecting end instruction")
                                 asyncio.create_task(_inject_end_instruction())
 
                         async with ws_lock:
@@ -4629,13 +4657,25 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                 pass
 
                 async def on_live_interrupted():
-                    nonlocal ai_is_speaking
+                    """User started speaking (speech_started event from OpenAI).
+                    Fires both when user interrupts the AI AND during normal turn-taking."""
+                    nonlocal ai_is_speaking, user_is_speaking
+                    was_ai_speaking = ai_is_speaking
                     ai_is_speaking = False
-                    import time as _time_mod
-                    echo_cooldown_until[0] = _time_mod.time() + 0.5  # shorter cooldown on interruption
+                    user_is_speaking = True
+                    if was_ai_speaking:
+                        # Actual interruption — apply echo cooldown
+                        import time as _time_mod
+                        echo_cooldown_until[0] = _time_mod.time() + 1.0
+                        async with ws_lock:
+                            try:
+                                await websocket.send_json({"type": "live_interrupted"})
+                            except Exception:
+                                pass
+                    # Always signal "user speaking" to frontend
                     async with ws_lock:
                         try:
-                            await websocket.send_json({"type": "live_interrupted"})
+                            await websocket.send_json({"type": "user_speaking", "speaking": True})
                         except Exception:
                             pass
 
@@ -4656,14 +4696,14 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                         "time_limit_minutes": interview_duration_minutes,
                     })
 
-                    # Kick off the conversation — Gemini won't speak first on its own
+                    # Kick off the conversation — the model won't speak first on its own
                     candidate_name = conversation.cv_candidate_name or "the candidate"
                     start_language = interview_start_language or "English"
                     await session.send_text(
                         f"The interview has just started. Speak ONLY in {start_language}. "
                         f"Greet {candidate_name} warmly in {start_language} and ask your first question in {start_language}."
                     )
-                    logger.info("📢 Sent initial prompt to Gemini Live to start talking")
+                    logger.info("📢 Sent initial prompt to OpenAI Realtime to start talking")
 
                     reconnect_attempts = [0]
                     max_reconnects = 2
@@ -4675,7 +4715,7 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                             untested_langs = [l for l in _req_langs_list if l not in conversation.get_tested_languages()] if _req_langs_list and len(_req_langs_list) > 1 else []
                             if not interview_ending and untested_langs and reconnect_attempts[0] < max_reconnects:
                                 reconnect_attempts[0] += 1
-                                logger.warning(f"⚠️ Gemini Live disconnected with untested languages {untested_langs} — attempting reconnect ({reconnect_attempts[0]}/{max_reconnects})")
+                                logger.warning(f"⚠️ OpenAI Realtime disconnected with untested languages {untested_langs} — attempting reconnect ({reconnect_attempts[0]}/{max_reconnects})")
                                 try:
                                     await session.close()
                                     # Rebuild session with existing conversation context
@@ -4686,8 +4726,8 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                         context_lines.append(f"{role}: {msg['content'][:200]}")
                                     context_text = "\n".join(context_lines)
 
-                                    session = GeminiLiveSession(
-                                        api_key=GOOGLE_API_KEY,
+                                    session = OpenAIRealtimeSession(
+                                        api_key=OPENAI_API_KEY,
                                         model=live_model,
                                         system_prompt=live_system_prompt,
                                         voice=live_voice,
@@ -4718,7 +4758,7 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                     switch_sent[0] = False
                                     switch_context_injected[0] = False
                                     switch_context_target[0] = None
-                                    logger.info(f"✅ Gemini Live reconnected successfully — switching to {next_lang}")
+                                    logger.info(f"✅ OpenAI Realtime reconnected successfully — switching to {next_lang}")
                                     async with ws_lock:
                                         try:
                                             await websocket.send_json({"type": "live_reconnected"})
@@ -4726,10 +4766,10 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                             pass
                                     continue
                                 except Exception as reconn_err:
-                                    logger.error(f"❌ Gemini Live reconnect failed: {reconn_err}")
+                                    logger.error(f"❌ OpenAI Realtime reconnect failed: {reconn_err}")
                                     break
                             else:
-                                logger.warning(f"⚠️ Gemini Live session disconnected — exiting loop (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()}, ending={interview_ending})")
+                                logger.warning(f"⚠️ OpenAI Realtime session disconnected — exiting loop (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()}, ending={interview_ending})")
                                 break
                         try:
                             message = await asyncio.wait_for(websocket.receive(), timeout=1.0)
@@ -4760,45 +4800,22 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
 
                             if msg_type == "live_audio":
                                 all_input_audio_chunks.append(data["audio"])
-                                turn_input_audio_chunks.append(data["audio"])
                                 recording_timeline.append(("input", data["audio"]))
                                 await session.send_audio(data["audio"])
-                                # Backup speech detection via PCM audio level
-                                # (Gemini inputTranscription can be delayed for first utterance)
-                                # Only check when AI is NOT speaking to avoid echo false-positives
-                                import time as _time_mod
-                                if not user_is_speaking and not ai_is_speaking and _time_mod.time() >= echo_cooldown_until[0]:
-                                    try:
-                                        import base64 as _b64_detect, struct as _struct_detect
-                                        _pcm_raw = _b64_detect.b64decode(data["audio"])
-                                        if len(_pcm_raw) >= 4:
-                                            _n_samples = len(_pcm_raw) // 2
-                                            _samples = _struct_detect.unpack(f'<{_n_samples}h', _pcm_raw[:_n_samples*2])
-                                            _rms = (sum(s*s for s in _samples) / _n_samples) ** 0.5
-                                            if _rms > 800:  # Speech threshold (silence is ~0-200)
-                                                user_is_speaking = True
-                                                async with ws_lock:
-                                                    try:
-                                                        await websocket.send_json({"type": "user_speaking", "speaking": True})
-                                                    except Exception:
-                                                        pass
-                                                # Also start debounce timer like inputTranscription does
-                                                if input_flush_task:
-                                                    input_flush_task.cancel()
-                                                input_flush_task = asyncio.create_task(schedule_input_flush())
-                                    except Exception:
-                                        pass
+                                # Buffer audio for per-turn recording (skip while AI is speaking to avoid echo)
+                                if not ai_is_speaking:
+                                    turn_input_audio_chunks.append(data["audio"])
                             elif msg_type == "end_interview":
-                                logger.info(f"👤 User ended Gemini Live interview (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()})")
+                                logger.info(f"👤 User ended OpenAI Realtime interview (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()})")
                                 break
                         elif "bytes" in message:
                             pass
                 except Exception as e:
                     err_str = str(e).lower()
                     if "disconnect" in err_str or "closed" in err_str:
-                        logger.info(f"📡 Client disconnected from Gemini Live (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()}, ending={interview_ending})")
+                        logger.info(f"📡 Client disconnected from OpenAI Realtime (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()}, ending={interview_ending})")
                     else:
-                        logger.error(f"Gemini Live error: {e} (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()})")
+                        logger.error(f"OpenAI Realtime error: {e} (ai_turns={ai_turn_count[0]}, tested={conversation.get_tested_languages()})")
                         try:
                             await websocket.send_json({
                                 "type": "error",
@@ -4816,15 +4833,13 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                     # Give the receive loop a moment to process any final turnComplete
                     # (so finalize_user_transcript runs via on_live_turn_complete for the last answer)
                     if interview_ending and session.connected:
-                        logger.info("⏳ Waiting for final Gemini messages before closing...")
+                        logger.info("⏳ Waiting for final OpenAI messages before closing...")
                         await asyncio.sleep(2)
 
                     # Finalize any pending user transcript BEFORE closing the session
-                    if input_flush_task:
-                        input_flush_task.cancel()
-                    await finalize_user_transcript()
+                    await finalize_user_transcript(is_turn_seal=True)
 
-                    # Now close the Gemini session
+                    # Now close the session
                     await session.close()
 
                     # If AI concluded, wait for the farewell audio to finish playing
@@ -4989,7 +5004,7 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                 from backend.database import SessionLocal
                                 db_bg = SessionLocal()
                                 try:
-                                    from backend.services.gemini_llm import generate_assessment as gen_assess
+                                    from backend.services.openai_llm import generate_assessment as gen_assess
                                     assessment = gen_assess(_history_f, interview_context=_ctx_f)
                                     recommendation = extract_recommendation(assessment)
                                     detailed_scores = extract_detailed_scores(assessment)
@@ -5054,11 +5069,11 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                             app.updated_at = datetime.now()
 
                                     db_bg.commit()
-                                    logger.info(f"✅ [BG] Gemini Live assessment stored: {interview_rec.interview_id}")
+                                    logger.info(f"✅ [BG] OpenAI Realtime assessment stored: {interview_rec.interview_id}")
 
                                     # Generate transcript annotations
                                     try:
-                                        from backend.services.language_llm_gemini import generate_transcript_annotations as gem_ann
+                                        from backend.services.language_llm_openai import generate_transcript_annotations as gem_ann
                                         annotations = gem_ann(conversation_history=_history_f, feedback_language=_feedback_language_f)
                                         for i, msg in enumerate(_history_f):
                                             if msg["role"] == "user":
@@ -5072,7 +5087,7 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                         logger.error(f"❌ [BG] Live transcript annotations failed: {e}")
 
                                 except Exception as e:
-                                    logger.error(f"❌ [BG] Gemini Live assessment error: {e}")
+                                    logger.error(f"❌ [BG] OpenAI Realtime assessment error: {e}")
                                     db_bg.rollback()
                                     # Save error info so admin can see it and regenerate later
                                     try:
@@ -5095,7 +5110,7 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                 finally:
                                     db_bg.close()
                             except Exception as e:
-                                logger.error(f"❌ [BG] Gemini Live assessment thread error: {e}")
+                                logger.error(f"❌ [BG] OpenAI Realtime assessment thread error: {e}")
 
                         import threading
                         threading.Thread(target=_run_live_final_assessment_bg, daemon=True).start()
@@ -5110,7 +5125,7 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                             pass
 
                     # Close WebSocket so frontend knows the interview is over
-                    logger.info("🔌 Closing WebSocket after Gemini Live session ended")
+                    logger.info("🔌 Closing WebSocket after OpenAI Realtime session ended")
                     try:
                         await websocket.close(code=1000, reason="Interview concluded")
                     except Exception:
@@ -5301,10 +5316,10 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                         # Generate transcript annotations
                                         try:
                                             if llm_prov == "gpt" or llm_prov == "openai":
-                                                from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_ann
+                                                from backend.services.language_llm_openai import generate_transcript_annotations as gemini_ann
                                                 annotations = gemini_ann(conversation_history=_history, model_id=llm_mod, feedback_language=_classic_feedback_lang)
                                             else:
-                                                from backend.services.language_llm_gemini import generate_transcript_annotations as gem_ann
+                                                from backend.services.language_llm_openai import generate_transcript_annotations as gem_ann
                                                 annotations = gem_ann(conversation_history=_history, model_id=llm_mod, feedback_language=_classic_feedback_lang)
 
                                             for i, msg in enumerate(_history):
@@ -5694,10 +5709,10 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                     _ws_ann_lang = conversation.interview_start_language if conversation else None
                                     try:
                                         if config.get("llm_provider", DEFAULT_LLM_PROVIDER) == "gpt":
-                                            from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                            from backend.services.language_llm_openai import generate_transcript_annotations as gemini_generate_transcript_annotations
                                             annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model, feedback_language=_ws_ann_lang)
                                         else:
-                                            from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                            from backend.services.language_llm_openai import generate_transcript_annotations as gemini_generate_transcript_annotations
                                             annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model, feedback_language=_ws_ann_lang)
                                         
                                         # Update conversation history with annotations
@@ -6049,10 +6064,10 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                 _rt_ann_lang = conversation.interview_start_language if conversation else None
                                 try:
                                     if config.get("llm_provider", DEFAULT_LLM_PROVIDER) == "gpt":
-                                        from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                        from backend.services.language_llm_openai import generate_transcript_annotations as gemini_generate_transcript_annotations
                                         annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model, feedback_language=_rt_ann_lang)
                                     else:
-                                        from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                        from backend.services.language_llm_openai import generate_transcript_annotations as gemini_generate_transcript_annotations
                                         annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model, feedback_language=_rt_ann_lang)
                                     
                                     # Update conversation history with annotations
@@ -6365,10 +6380,10 @@ MULTI-LANGUAGE INTERVIEW — MANDATORY:
                                 _rt_ann_lang = conversation.interview_start_language if conversation else None
                                 try:
                                     if config.get("llm_provider", DEFAULT_LLM_PROVIDER) == "gpt":
-                                        from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                        from backend.services.language_llm_openai import generate_transcript_annotations as gemini_generate_transcript_annotations
                                         annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model, feedback_language=_rt_ann_lang)
                                     else:
-                                        from backend.services.language_llm_gemini import generate_transcript_annotations as gemini_generate_transcript_annotations
+                                        from backend.services.language_llm_openai import generate_transcript_annotations as gemini_generate_transcript_annotations
                                         annotations = gemini_generate_transcript_annotations(conversation_history=history, model_id=llm_model, feedback_language=_rt_ann_lang)
                                     
                                     # Update conversation history with annotations

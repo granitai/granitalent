@@ -193,11 +193,11 @@ def generate_audio_check_message(model_id: Optional[str] = None, language: Optio
     
     model = genai.GenerativeModel(model_id)
     
-    prompt = f"""You are a friendly AI interviewer. Before starting the interview, you want to make sure everything is working properly.
+    prompt = f"""You are Granit, a friendly virtual interview assistant from Granitalent. Before starting the interview, you want to make sure everything is working properly.
 
 {lang_instruction}
 
-Say a brief, friendly message to check if the candidate can hear you. Something like "Hi, can you hear me?" or "Hello, do you hear me okay?" but in the specified language.
+Introduce yourself as Granit and say a brief, friendly message to check if the candidate can hear you. Something like "Hi, I'm Granit! Can you hear me?" but in the specified language.
 
 Keep it very brief (1 sentence), warm, and friendly. Respond only with what you would say, without any prefix."""
     
@@ -225,11 +225,11 @@ def generate_name_request_message(model_id: Optional[str] = None, language: Opti
     
     model = genai.GenerativeModel(model_id)
     
-    prompt = f"""You are a friendly AI interviewer. You've confirmed the candidate can hear you. Now you want to get their name to make sure the audio and speech recognition are working correctly.
+    prompt = f"""You are Granit, a friendly virtual interview assistant from Granitalent. You've confirmed the candidate can hear you. Now you want to get their name to make sure the audio and speech recognition are working correctly.
 
 {lang_instruction}
 
-Ask the candidate to tell you their name and how it's spelled. Be warm and friendly. Something like "Great! Can you please tell me your name and how it's spelled?" or "Perfect! Could you tell me your name and spell it for me?" but in the specified language.
+Ask the candidate to tell you their name and how it's spelled. Be warm and friendly. Something like "Great! Can you please tell me your name and how it's spelled?" but in the specified language.
 
 Keep it brief (1-2 sentences), warm, and friendly. Respond only with what you would say, without any prefix."""
     
@@ -294,10 +294,11 @@ def generate_opening_greeting(
 {lang_instruction}
 
 Start the actual interview by:
-1. Greeting the candidate warmly using their name ({name_mention if candidate_name else "Hi,"})
-2. Mentioning the position they're interviewing for ({job_title})
-3. Briefly acknowledging you've reviewed their CV
-4. Asking them to introduce themselves and tell you what interests them about this role
+1. Introducing yourself as Granit, a virtual interview assistant from Granitalent
+2. Greeting the candidate warmly using their name ({name_mention if candidate_name else "Hi,"})
+3. Mentioning the position they're interviewing for ({job_title})
+4. Briefly acknowledging you've reviewed their CV
+5. Asking them to introduce themselves and tell you what interests them about this role
 
 Keep it brief, friendly, and professional. Maximum 3-4 sentences.
 Respond in {interview_start_language if interview_start_language else 'English'}. No prefix like 'Interviewer:'."""
@@ -305,7 +306,7 @@ Respond in {interview_start_language if interview_start_language else 'English'}
         name_mention = f"Hi {candidate_name}," if candidate_name else "Hi,"
         prompt = f"""{INTERVIEWER_SYSTEM_PROMPT}
 
-Start the interview by greeting the candidate warmly{f' using their name ({name_mention})' if candidate_name else ''} and asking them to introduce themselves. 
+Start the interview by introducing yourself as Granit from Granitalent, greeting the candidate warmly{f' using their name ({name_mention})' if candidate_name else ''} and asking them to introduce themselves.
 Keep it brief, friendly, and professional. Maximum 2-3 sentences.
 Respond only with what you would say, without any prefix like 'Interviewer:'."""
     
@@ -500,13 +501,19 @@ A proper evaluation cannot be provided as there was insufficient interview conte
     
     prompt = f"""You are an expert interview assessor. Evaluate the candidate based ONLY on the transcript below.
 
+CRITICAL — SPEAKER ATTRIBUTION:
+- Lines starting with "Interviewer:" are spoken by the AI interviewer (Granit). NEVER attribute these to the candidate.
+- Lines starting with "Candidate:" are spoken by the candidate. ONLY evaluate these.
+- When quoting evidence, ONLY quote "Candidate:" lines. Never quote "Interviewer:" lines as candidate speech.
+- The interviewer's greetings, questions, and comments are NOT the candidate's words.
+
 {context_section}=== INTERVIEW TRANSCRIPT ===
 {transcript_text}
 {weight_instructions}{custom_questions_section}
 RULES:
-- ONLY use evidence from the transcript. Never invent responses.
+- ONLY use evidence from CANDIDATE lines in the transcript. Never quote or attribute Interviewer lines to the candidate.
 - If the candidate gave minimal answers, score low. Do not fabricate positive evaluations.
-- Quote specific candidate responses to justify scores.
+- Quote specific candidate responses to justify scores. Always prefix quotes with "Candidate:" to show attribution.
 
 Provide scores (0-10) with brief justification for each:
 

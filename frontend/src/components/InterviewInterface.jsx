@@ -124,6 +124,7 @@ const RESPONSE_DEBOUNCE_MS = 1000  // Prevent processing duplicate responses wit
 const FORCE_STOP_AFTER_MS = 45000  // Failsafe: force stop recording after 45 seconds
 const LOW_ACTIVITY_TIMEOUT_MS = 8000  // If no strong speech detected for 8 seconds, stop
 
+
 function InterviewInterface({ interview, onClose }) {
   const [connected, setConnected] = useState(false)
   const [conversation, setConversation] = useState([])
@@ -149,6 +150,7 @@ function InterviewInterface({ interview, onClose }) {
   const audioChunksRef = useRef([])
   const currentAudioRef = useRef(null)
   const conversationIdRef = useRef(null)
+  const reconnectAttemptsRef = useRef(0)
   const vadIntervalRef = useRef(null)
   const silenceStartRef = useRef(null)
   const speechStartRef = useRef(null)
@@ -291,14 +293,12 @@ function InterviewInterface({ interview, onClose }) {
     pendingListenRef.current = false
   }
 
-  // ========== GEMINI LIVE STREAMING ==========
+  // ========== LIVE STREAMING (OpenAI Realtime) ==========
   const startLiveStreaming = () => {
-    console.log('🎙️ Starting live PCM streaming to Gemini...')
-
-    // Ensure audio context and PCM capture are initialized
-    // (initAudioContext should already have been called in connectWebSocket)
+    console.log('🎙️ Starting live PCM streaming to OpenAI Realtime...')
 
     // Flush PCM buffer to server every 100ms for low latency
+    // All audio (including silence) is sent so OpenAI's server_vad can detect turn boundaries
     liveFlushIntervalRef.current = setInterval(() => {
       if (pcmBufferRef.current.length === 0) return
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
@@ -501,6 +501,7 @@ function InterviewInterface({ interview, onClose }) {
       ws.onopen = () => {
         console.log('WebSocket connected')
         setConnected(true)
+        reconnectAttemptsRef.current = 0
         updateStatus('Connected', 'connected')
 
         // Start video recording when interview connects
@@ -550,9 +551,21 @@ function InterviewInterface({ interview, onClose }) {
           }
           cleanupResources()
         } else if (!isEndingInterview && !assessment) {
-          // Unexpected close
-          updateStatus('Disconnected', 'error')
-          stopListening()
+          // Unexpected close — attempt auto-reconnect (up to 2 retries)
+          const retryCount = reconnectAttemptsRef.current || 0
+          if (retryCount < 2 && conversationIdRef.current) {
+            reconnectAttemptsRef.current = retryCount + 1
+            console.warn(`⚠️ Unexpected disconnect (code=${event.code}), reconnecting... (attempt ${retryCount + 1}/2)`)
+            updateStatus(`Reconnecting... (${retryCount + 1}/2)`, 'connecting')
+            // Brief delay before reconnecting
+            setTimeout(() => {
+              connectWebSocket()
+            }, 1500)
+          } else {
+            updateStatus('Disconnected', 'error')
+            setError('Connection lost. Please refresh and try again.')
+            stopListening()
+          }
         }
       }
     } catch (err) {
@@ -755,10 +768,20 @@ function InterviewInterface({ interview, onClose }) {
         break
 
       case 'live_user_transcript':
-        // Finalized transcription of what the user said (shown only after user finishes speaking)
+        // Transcription of what the user said — may arrive as partial updates
+        // Update the last user message if it exists, otherwise add a new one
         setIsUserSpeaking(false)
         if (data.text) {
-          addMessage('user', data.text)
+          setConversation(prev => {
+            // Find the last message — if it's from the user, update it
+            if (prev.length > 0 && prev[prev.length - 1].sender === 'user') {
+              const updated = [...prev]
+              updated[updated.length - 1] = { ...updated[updated.length - 1], text: data.text }
+              return updated
+            }
+            // Otherwise add a new user message
+            return [...prev, { sender: 'user', text: data.text, timestamp: new Date() }]
+          })
         }
         break
 

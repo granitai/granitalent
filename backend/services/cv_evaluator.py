@@ -1,9 +1,9 @@
-"""CV evaluation service using Gemini LLM."""
+"""CV evaluation service using OpenAI LLM."""
 import logging
 import json
 import re
 from typing import Dict, Optional
-from backend.config import LLM_PROVIDERS, DEFAULT_LLM_PROVIDER
+from backend.config import OPENAI_API_KEY
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -29,9 +29,9 @@ def evaluate_cv_fit(
         Dictionary with evaluation results
     """
     if llm_model is None:
-        llm_model = LLM_PROVIDERS["gemini"]["default_model"]
+        llm_model = "gpt-4o"
 
-    logger.info(f"Evaluating CV fit using gemini/{llm_model}")
+    logger.info(f"Evaluating CV fit using openai/{llm_model}")
 
     # Create evaluation prompt
     evaluation_prompt = f"""You are an HR screening assistant. Evaluate if the candidate's CV matches the job requirements.
@@ -55,13 +55,18 @@ Please evaluate the candidate's fit for this position. Provide your assessment i
 Be thorough and specific. If the candidate clearly doesn't match (e.g., wrong field, missing critical skills), set status to "rejected" and explain why. If there's reasonable fit, set status to "approved"."""
 
     try:
-        import google.generativeai as genai
-        from backend.config import GOOGLE_API_KEY
-
-        genai.configure(api_key=GOOGLE_API_KEY)
-        model = genai.GenerativeModel(llm_model)
-        response = model.generate_content(evaluation_prompt)
-        response_text = response.text
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model=llm_model,
+            messages=[
+                {"role": "system", "content": "You are an HR screening assistant. Respond with valid JSON only."},
+                {"role": "user", "content": evaluation_prompt}
+            ],
+            temperature=0.3,
+            max_tokens=1000,
+        )
+        response_text = response.choices[0].message.content
 
         # Parse JSON response
         evaluation_result = _parse_evaluation_response(response_text)

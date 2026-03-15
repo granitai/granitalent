@@ -91,7 +91,7 @@ class GeminiLiveSession:
         url = f"{GEMINI_LIVE_WS_BASE}?key={self.api_key}"
         logger.info(f"Connecting to Gemini Live ({self.model})...")
 
-        self.ws = await websockets.connect(url, max_size=16 * 1024 * 1024, ping_interval=30)
+        self.ws = await websockets.connect(url, max_size=16 * 1024 * 1024, ping_interval=20, ping_timeout=60)
 
         setup = {
             "setup": {
@@ -141,10 +141,10 @@ class GeminiLiveSession:
                 "realtimeInputConfig": {
                     "automaticActivityDetection": {
                         "disabled": False,
-                        "startOfSpeechSensitivity": "START_SENSITIVITY_HIGH",
+                        "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
                         "endOfSpeechSensitivity": "END_SENSITIVITY_HIGH",
-                        "prefixPaddingMs": 200,
-                        "silenceDurationMs": 800,
+                        "prefixPaddingMs": 500,
+                        "silenceDurationMs": 2000,
                     }
                 },
                 "inputAudioTranscription": {},
@@ -180,7 +180,9 @@ class GeminiLiveSession:
                 }
             }))
         except Exception as e:
-            logger.error(f"send_audio error: {e}")
+            if self.connected:
+                logger.error(f"send_audio error: {e}")
+                self.connected = False
 
     async def send_text(self, text: str):
         """Send a text message to the live session (e.g. for assessment).
@@ -195,7 +197,9 @@ class GeminiLiveSession:
                 }
             }))
         except Exception as e:
-            logger.error(f"send_text error: {e}")
+            if self.connected:
+                logger.error(f"send_text error: {e}")
+                self.connected = False
 
     async def send_context(self, text: str):
         """Buffer a text instruction into the conversation context WITHOUT triggering a response.
@@ -216,7 +220,9 @@ class GeminiLiveSession:
                 }
             }))
         except Exception as e:
-            logger.error(f"send_context error: {e}")
+            if self.connected:
+                logger.error(f"send_context error: {e}")
+                self.connected = False
 
     # ------------------------------------------------------------------
     # Receiving (background loop)
