@@ -15,7 +15,7 @@ const WS_URL = getWebSocketURL()
 const API_BASE_URL = '/api'
 
 // ================================================================
-// PCM Player — streams 24kHz PCM audio from Gemini Live API
+// PCM Player — streams 24kHz PCM audio from OpenAI Realtime API
 // ================================================================
 class PCMPlayer {
   constructor() {
@@ -183,7 +183,7 @@ function InterviewInterface({ interview, onClose }) {
   const pcmWorkerRef = useRef(null)
   const pcmBufferRef = useRef([])
 
-  // Gemini Live mode refs (always live mode for real-time)
+  // Realtime mode refs
   const isLiveModeRef = useRef(true)
   const pcmPlayerRef = useRef(null)
   const liveFlushIntervalRef = useRef(null)
@@ -224,15 +224,16 @@ function InterviewInterface({ interview, onClose }) {
       setProvidersConfig(config)
 
       // Set default voice from config
-      if (config.gemini_live?.default_voice) {
-        setLiveVoice(config.gemini_live.default_voice)
+      const realtimeConfig = config.realtime || config.gemini_live
+      if (realtimeConfig?.default_voice) {
+        setLiveVoice(realtimeConfig.default_voice)
       }
 
       updateStatus('Ready to start', '')
     } catch (error) {
       console.error('Failed to load providers:', error)
       updateStatus('Failed to load - using defaults', 'error')
-      setProvidersConfig({ gemini_live: { voices: [{ id: 'Kore', name: 'Kore — Clear & Professional' }], default_voice: 'Kore' } })
+      setProvidersConfig({ realtime: { voices: [{ id: 'sage', name: 'Sage — Clear & Professional' }], default_voice: 'sage' } })
     }
   }
 
@@ -298,7 +299,10 @@ function InterviewInterface({ interview, onClose }) {
     console.log('🎙️ Starting live PCM streaming to OpenAI Realtime...')
 
     // Flush PCM buffer to server every 100ms for low latency
-    // All audio (including silence) is sent so OpenAI's server_vad can detect turn boundaries
+    // All audio (including silence) must be sent continuously — OpenAI's server_vad
+    // needs an uninterrupted stream to properly detect speech start/stop boundaries.
+    // Echo is handled server-side by OpenAI's built-in noise reduction (far_field)
+    // and the browser's WebRTC AEC (echoCancellation constraint).
     liveFlushIntervalRef.current = setInterval(() => {
       if (pcmBufferRef.current.length === 0) return
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
@@ -507,16 +511,16 @@ function InterviewInterface({ interview, onClose }) {
         // Start video recording when interview connects
         startSnapshotCapture()
 
-        // Send start interview message — always Gemini Live mode
+        // Send start interview message — always OpenAI Realtime mode
         const startMessage = {
           type: 'start_interview',
           interview_id: interview.interview_id,
           application_id: interview.application_id,
-          mode: 'gemini_live',
-          gemini_live_voice: liveVoice,
+          mode: 'realtime',
+          voice: liveVoice,
         }
 
-        console.log('Starting Gemini Live interview:', startMessage)
+        console.log('Starting realtime interview:', startMessage)
         ws.send(JSON.stringify(startMessage))
       }
 
@@ -734,10 +738,10 @@ function InterviewInterface({ interview, onClose }) {
         break
 
       // ============================================================
-      // GEMINI LIVE MODE messages
+      // OPENAI REALTIME MODE messages
       // ============================================================
       case 'live_ready':
-        console.log('🎙️ Gemini Live session ready!')
+        console.log('🎙️ OpenAI Realtime session ready!')
         conversationIdRef.current = data.conversation_id
         if (data.time_limit_minutes) {
           startCountdown(data.time_limit_minutes)
@@ -1480,11 +1484,11 @@ function InterviewInterface({ interview, onClose }) {
       {/* Voice selector — only before interview starts, hidden once assessment exists */}
       {!connected && !assessment && providersConfig && (
         <div className="provider-selectors">
-          {providersConfig?.gemini_live && (
+          {(providersConfig?.realtime || providersConfig?.gemini_live) && (
             <div className="live-voice-selector">
               <label>AI Voice</label>
               <div className="voice-options">
-                {providersConfig.gemini_live.voices.map((v) => (
+                {(providersConfig.realtime || providersConfig.gemini_live).voices.map((v) => (
                   <button
                     key={v.id}
                     className={`voice-btn ${liveVoice === v.id ? 'active' : ''}`}

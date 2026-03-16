@@ -1,0 +1,51 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -e
+            cd ${{ secrets.VPS_PROJECT_PATH }}
+
+            echo "=== Pulling latest code ==="
+            git pull origin main
+
+            echo "=== Rebuilding and deploying ==="
+            if docker compose version > /dev/null 2>&1; then
+              DC="docker compose"
+            else
+              DC="docker-compose"
+            fi
+
+            $DC -f docker-compose.prod.yml up -d --build
+
+            echo "=== Waiting for services to start ==="
+            sleep 10
+
+            echo "=== Container status ==="
+            docker ps --filter "name=granitalent" --format "table {{.Names}}\t{{.Status}}"
+
+            echo "=== Health check ==="
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://talents.granitai.com || echo "000")
+            if echo "$HTTP_CODE" | grep -q "200\|301\|302"; then
+              echo "Deployment successful! (HTTP $HTTP_CODE)"
+            else
+              echo "WARNING: Health check returned HTTP $HTTP_CODE"
+              $DC -f docker-compose.prod.yml logs --tail 30 backend
+              exit 1
+            fi

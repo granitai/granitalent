@@ -25,8 +25,8 @@ if not SECRET_KEY:
     # Generate a random secret key if not set (for development only)
     # In production, you MUST set JWT_SECRET_KEY in your .env file
     SECRET_KEY = secrets.token_urlsafe(32)
-    print("⚠️  WARNING: JWT_SECRET_KEY not set in environment. Using a random key (tokens will be invalid on restart).")
-    print("   Set JWT_SECRET_KEY in your .env file for production use.")
+    print("WARNING: JWT_SECRET_KEY not set in environment. Using a random key (tokens will be invalid on restart).")
+    print("  Set JWT_SECRET_KEY in your .env file for production use.")
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours

@@ -9,7 +9,6 @@ load_dotenv()
 # API Keys (required)
 # ============================================================
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # JWT Secret Key (for authentication)
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
@@ -54,14 +53,6 @@ LLM_PROVIDERS = {
         },
         "default_model": "gpt-4o"
     },
-    "gemini": {
-        "name": "Google Gemini",
-        "models": {
-            "gemini-2.5-flash": "Gemini 2.5 Flash — Fast & Smart",
-            "gemini-2.5-pro": "Gemini 2.5 Pro — Highest Quality",
-        },
-        "default_model": "gemini-2.5-flash"
-    },
 }
 
 # Default selections
@@ -87,15 +78,8 @@ OPENAI_REALTIME_VOICES = {
     "verse": "Verse — Versatile & Expressive",
 }
 
-# Legacy aliases for backward compatibility
-GEMINI_LIVE_MODEL = OPENAI_REALTIME_MODEL
-GEMINI_LIVE_VOICE = OPENAI_REALTIME_VOICE
-GEMINI_LIVE_VOICES = OPENAI_REALTIME_VOICES
-
-# Legacy model constants (for backward compatibility)
-TTS_MODEL = TTS_PROVIDERS[DEFAULT_TTS_PROVIDER]["default_model"]
+# Model defaults (derived from provider config)
 STT_MODEL = STT_PROVIDERS[DEFAULT_STT_PROVIDER]["default_model"]
-LLM_MODEL = LLM_PROVIDERS[DEFAULT_LLM_PROVIDER]["default_model"]
 
 # Interview time limit (in minutes) - default 20 minutes
 INTERVIEW_TIME_LIMIT_MINUTES = int(os.getenv("INTERVIEW_TIME_LIMIT_MINUTES", "20"))
@@ -109,11 +93,6 @@ LLM_FREQUENCY_PENALTY = 0.4
 ASSESSMENT_TEMPERATURE = 0.3
 ASSESSMENT_MAX_TOKENS = 4096
 LANGUAGE_LLM_TEMPERATURE = 0.8
-
-# ============================================================
-# Transcript Cleanup
-# ============================================================
-TRANSCRIPT_CLEANUP_MODEL = "gemini-2.0-flash-lite"
 
 # ============================================================
 # Service Retry & Timeout Configuration

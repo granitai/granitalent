@@ -77,8 +77,10 @@ class OpenAIRealtimeSession:
         self.voice = voice
         self.language = language
         # VAD threshold (0-1): higher = less sensitive to noise, but may miss quiet speech.
-        # Tune via env var: 0.5 (default/sensitive), 0.7 (good for laptops), 0.9 (very noisy).
-        self.vad_threshold = float(os.getenv("VAD_THRESHOLD", "0.6"))
+        # 0.5 = OpenAI default. Tunable via VAD_THRESHOLD env var.
+        self.vad_threshold = float(os.getenv("VAD_THRESHOLD", "0.5"))
+        # Silence duration before ending the turn. 500ms = OpenAI default.
+        # Tunable via VAD_SILENCE_MS env var.
         self.vad_silence_ms = int(os.getenv("VAD_SILENCE_MS", "500"))
         self.ws = None
         self.connected = False
@@ -167,13 +169,12 @@ class OpenAIRealtimeSession:
                 "turn_detection": {
                     "type": "server_vad",
                     # Threshold (0-1): how loud audio must be to count as speech.
-                    # 0.5 = OpenAI default, 0.6 = moderate noise rejection, 0.8+ = very noisy.
-                    # Configurable via VAD_THRESHOLD env var.
+                    # 0.5 = OpenAI default. Tunable via VAD_THRESHOLD env var.
                     "threshold": self.vad_threshold,
                     # Audio to keep before detected speech start (avoids clipping first syllable)
                     "prefix_padding_ms": 300,
-                    # Silence duration before ending the turn.
-                    # 500ms = responsive (OpenAI default). Configurable via VAD_SILENCE_MS.
+                    # Silence duration before ending the turn. 500ms = OpenAI default.
+                    # Tunable via VAD_SILENCE_MS env var.
                     "silence_duration_ms": self.vad_silence_ms,
                     "create_response": True,
                     "interrupt_response": True,
